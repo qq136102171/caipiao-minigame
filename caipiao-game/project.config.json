@@ -1,0 +1,62 @@
+{
+  "description": "彩票投注方案生成器 - 微信小游戏",
+  "compileType": "game",
+  "libVersion": "3.17.0",
+  "appid": "wxe486cf36db681591",
+  "projectname": "caipiao-game",
+  "miniprogramRoot": "./",
+  "setting": {
+    "es6": true,
+    "minified": true,
+    "uglifyFileName": false,
+    "enhance": true,
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    },
+    "minifyWXML": true,
+    "minifyWXSS": true,
+    "swc": false,
+    "disableSWC": true,
+    "useCompilerPlugins": false
+  },
+  "packOptions": {
+    "ignore": [
+      {
+        "type": "file",
+        "value": "README.md"
+      },
+      {
+        "type": "file",
+        "value": "preview.html"
+      },
+      {
+        "type": "file",
+        "value": "preview_dlt.html"
+      },
+      {
+        "type": "folder",
+        "value": "__pycache__"
+      },
+      {
+        "type": "folder",
+        "value": ".git"
+      },
+      {
+        "type": "regex",
+        "value": "\\.DS_Store$"
+      },
+      {
+        "type": "regex",
+        "value": "/\\.[^/]+$"
+      }
+    ],
+    "include": []
+  },
+  "condition": {},
+  "editorSetting": {
+    "tabIndent": "insertSpaces",
+    "tabSize": 2
+  }
+}

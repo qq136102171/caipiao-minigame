@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>彩票投注单</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="ticket">
+        <div class="ticket-header">
+            <div class="logo">双色球</div>
+            <div class="ticket-info">
+                <span class="time" id="currentTime">--:--</span>
+                <span class="history-pill" id="historyPill" title="历史样本">样本 --</span>
+            </div>
+        </div>
+
+        <div class="ticket-actions">
+            <div class="strategy-row">
+                <label>选择彩种</label>
+                <div class="lottery-options">
+                    <button class="lottery-btn active" data-lottery="ssq">双色球</button>
+                    <button class="lottery-btn" data-lottery="dlt">大乐透</button>
+                </div>
+            </div>
+            <div class="strategy-row" id="strategyRow">
+                <label>投注策略</label>
+                <div class="strategy-options">
+                    <span class="strategy-text">原始策略（4+2）</span>
+                </div>
+            </div>
+            <button class="generate-btn" id="generateBtn">
+                <span class="icon">🎱</span>
+                <span>生成一注</span>
+            </button>
+        </div>
+
+        <div class="bet-list" id="betList">
+            <div class="empty-tip">点击上方按钮生成投注号码</div>
+        </div>
+
+        <div class="ticket-footer">
+            <div class="summary-row">
+                <span id="betCount">0 注</span>
+                <span class="divider">|</span>
+                <span id="betCost">0 元</span>
+            </div>
+            <div class="qrcode-area">
+                <div class="qrcode" id="qrcode"></div>
+                <div class="qrcode-text">中国福利彩票</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="extra-panel" id="extraPanel" style="display:none;">
+        <div class="panel-title">号码结构</div>
+        <div class="structures" id="structures"></div>
+        <div class="panel-title">重叠检查</div>
+        <div class="overlaps" id="overlaps"></div>
+    </div>
+
+    <div class="extra-panel" id="historyPanel" style="display:none;">
+        <div class="panel-title">
+            <span>📊 历史命中分析</span>
+            <span class="history-meta" id="historyMeta"></span>
+        </div>
+        <div class="history-empty" id="historyEmpty" style="display:none;">
+            暂无历史数据，运行 <code>.venv/bin/python fetch_history.py fetch --type ssq --limit 200</code> 拉取数据后即可查看分析。
+        </div>
+        <div class="history-section" id="historyPerBet"></div>
+
+        <div class="panel-subtitle">热号 / 冷号 Top 5</div>
+        <div class="hotcold" id="hotcold"></div>
+    </div>
+
+    <div class="bottom-actions">
+        <button class="link-btn" id="toggleExtra">查看结构/检查</button>
+        <button class="link-btn" id="toggleHistory">查看历史分析</button>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

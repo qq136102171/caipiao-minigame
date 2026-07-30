@@ -1,0 +1,61 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Flask
+instance/
+
+# 项目产物
+dist/
+*.app/
+
+# 系统
+.DS_Store
+
+# 小程序产物
+caipiao-miniprogram/miniprogram_npm/
+caipiao-miniprogram/node_modules/
+
+# 敏感信息
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secret.txt
+secrets.json
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志
+*.log
+
+# Codex
+.codex/
+.mcp/
+
+# 备份目录
+caipiao-miniprogram.bak/
+
+# 微信小程序代码上传密钥
+keys/
+
+# 构建产物
+caipiao-game/screenshots/
+caipiao-miniprogram.bak
+
+# 当前是 caipiao-game（小游戏），旧的 caipiao-miniprogram 备份不再需要
+
+# 临时禁用的配置文件
+*.disabled
+caipiao-miniprogram/game.json.bak

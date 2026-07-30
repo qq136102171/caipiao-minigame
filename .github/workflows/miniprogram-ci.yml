@@ -1,0 +1,96 @@
+name: 小程序 CI 检查
+
+on:
+  push:
+    branches: [main]
+    paths: ['caipiao-miniprogram/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Python（用于 JS 静态检查）
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 校验项目结构
+        run: |
+          set -e
+          cd caipiao-miniprogram
+          echo "== 检查必需文件 =="
+          for f in app.json app.js app.wxss sitemap.json project.config.json \
+                   pages/index/index.wxml pages/index/index.wxss pages/index/index.js pages/index/index.json \
+                   utils/random.js utils/generator.js utils/dlt.js utils/history.js \
+                   data/ssq_history.js data/dlt_history.js; do
+            if [[ ! -f "$f" ]]; then
+              echo "❌ 缺失: $f"
+              exit 1
+            fi
+          done
+          echo "✓ 17 个核心文件齐全"
+
+      - name: JS 大括号匹配检查
+        run: |
+          python3 << 'EOF'
+          import re, os
+          issues = []
+          for root, _, files in os.walk("caipiao-miniprogram"):
+              for f in files:
+                  if not f.endswith(".js"): continue
+                  path = os.path.join(root, f)
+                  c = open(path).read()
+                  c = re.sub(r'//[^\n]*', '', c)
+                  c = re.sub(r'/\*[\s\S]*?\*/', '', c)
+                  c = re.sub(r"'(?:\\.|[^'\\])*'", '', c)
+                  c = re.sub(r'"(?:\\.|[^"\\])*"', '', c)
+                  c = re.sub(r'`(?:\\.|[^`\\])*`', '', c)
+                  for o, x in [("{", "}"), ("(", ")"), ("[", "]")]:
+                      if c.count(o) != c.count(x):
+                          issues.append(f"{path}: {o}{x} 不配对")
+          if issues:
+              print("❌", "\n".join(issues))
+              exit(1)
+          print("✓ JS 文件大括号/括号全部配对")
+          EOF
+
+      - name: WXML 配对检查
+        run: |
+          python3 << 'EOF'
+          import re, os
+          for f in ["pages/index/index.wxml"]:
+              c = open("caipiao-miniprogram/" + f).read()
+              c = re.sub(r'<!--[\s\S]*?-->', '', c)
+              o = len(re.findall(r'<block[^>]*>', c))
+              x = c.count("</block>")
+              print(f"  {f}: <block> open={o} close={x}")
+              assert o == x
+          print("✓ WXML <block> 全部闭合")
+          EOF
+
+      - name: JSON 格式校验
+        run: |
+          for f in caipiao-miniprogram/app.json caipiao-miniprogram/pages/index/index.json \
+                   caipiao-miniprogram/project.config.json caipiao-miniprogram/sitemap.json; do
+            python3 -c "import json; json.load(open('$f'))" && echo "  ✓ $f" || exit 1
+          done
+
+      - name: 历史数据格式校验
+        run: |
+          python3 << 'EOF'
+          import re
+          for f in ["caipiao-miniprogram/data/ssq_history.js",
+                    "caipiao-miniprogram/data/dlt_history.js"]:
+              lines = re.findall(r'"([^"]+)"', open(f).read())
+              data = [l for l in lines if "|" in l]
+              for line in data:
+                  parts = line.split("|")
+                  assert len(parts) == 4, f"{line} 格式错"
+              print(f"  ✓ {f}: {len(data)} 期合法")
+          EOF

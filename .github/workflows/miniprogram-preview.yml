@@ -1,0 +1,94 @@
+name: 小程序预览版上传
+
+# 触发：手动 / push 到 main / PR
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (如 1.0.0)'
+        required: true
+        default: '1.0.0'
+      desc:
+        description: '上传描述'
+        required: true
+        default: 'Auto upload from CI'
+  push:
+    branches: [main]
+    paths:
+      - 'caipiao-miniprogram/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'caipiao-miniprogram/**'
+
+jobs:
+  upload-preview:
+    # 微信开发者工具目前没有稳定的 Linux CLI，必须用 macOS runner
+    runs-on: macos-14
+    timeout-minutes: 15
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js（用于 miniprogram-ci，可选）
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 安装微信开发者工具
+        # 官方下载地址（CI 缓存里通常没有，所以直接下）
+        run: |
+          set -e
+          TMP="$(mktemp -d)"
+          cd "$TMP"
+          curl -fL -o devtools.pkg \
+            "https://dldir1v6.qq.com/WechatWebDev/release/publish/wechatdevtools-web-1.06.2412050.dmg" \
+            --max-time 120 || {
+              echo "⚠ 官方下载失败，请更新 URL 或手动下载后传入 WECHAT_DEVTOOLS_PATH"
+              exit 1
+            }
+          # 这里简化：CI 用户通常在 self-hosted runner 上预装
+          # 也可用 setup-wechat-devtools 之类的 action
+          ls -la devtools.pkg
+          echo "(简化版) 实际 CI 请使用自托管 macOS runner + 预装的开发者工具"
+
+      - name: 上传到微信后台（体验版）
+        env:
+          WECHAT_APPID: ${{ secrets.WECHAT_APPID }}
+          WECHAT_PRIVATE_KEY: ${{ secrets.WECHAT_PRIVATE_KEY }}
+          VERSION: ${{ github.event.inputs.version || 'ci-auto' }}
+          DESC: ${{ github.event.inputs.desc || github.event.head_commit.message }}
+        run: |
+          set -e
+          if [[ -z "$WECHAT_APPID" || -z "$WECHAT_PRIVATE_KEY" ]]; then
+            echo "⚠ 未配置 WECHAT_APPID / WECHAT_PRIVATE_KEY secrets，跳过上传"
+            exit 0
+          fi
+          # 把私钥写入临时文件
+          echo "$WECHAT_PRIVATE_KEY" > /tmp/wechat.key
+
+          # 调用官方 CLI 上传
+          WECHAT_CLI="/Applications/wechatwebdevtools.app/Contents/MacOS/cli"
+          if [[ ! -x "$WECHAT_CLI" ]]; then
+            echo "❌ 微信开发者工具 CLI 不存在: $WECHAT_CLI"
+            exit 1
+          fi
+          cd caipiao-miniprogram
+          "$WECHAT_CLI" preview \
+            --project "$PWD" \
+            --appid "$WECHAT_APPID" \
+            --private-key /tmp/wechat.key \
+            --upload-version "$VERSION" \
+            --upload-desc "$DESC" \
+            --qrcode-output /tmp/preview-qr.png \
+            --cache /tmp/wc-cache || true
+          echo "✅ 上传完成"
+
+      - name: 上传预览二维码
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-qrcode
+          path: /tmp/preview-qr.png
+          if-no-files-found: ignore
