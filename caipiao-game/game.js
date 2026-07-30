@@ -1218,6 +1218,13 @@ function setupTouch() {
     state.scrollVelocity = 0;   // 重新触摸取消惯性
     if (_inertiaRAF) { cancelAnimationFrame(_inertiaRAF); _inertiaRAF = null; }
     state.pressedBtn = _hitTestButtons(t.clientX, t.clientY);
+    // 调试日志：用户可在 vConsole 中看到每次触摸的位置和命中结果
+    const _sy = -state.scrollY;
+    console.log('[TOUCH]', t.clientX, t.clientY, 'scrollY=', state.scrollY, 'layoutY=', JSON.stringify({
+      tabY: layoutY.tabY, genBtnY: layoutY.genBtnY, exportBtnY: layoutY.exportBtnY
+    }), 'screenY=', {
+      tab: layoutY.tabY + _sy, gen: layoutY.genBtnY + _sy, export: layoutY.exportBtnY + _sy
+    }, 'hit=', state.pressedBtn && state.pressedBtn.kind || 'none');
   });
   wx.onTouchMove(e => {
     const t = e.touches[0];
@@ -1236,6 +1243,7 @@ function setupTouch() {
     state.scrollVelocity = -(state.scrollY - state.touchStartScroll) / dt;
   });
   wx.onTouchEnd(() => {
+    console.log('[TOUCH-END] pressedBtn=', state.pressedBtn && state.pressedBtn.kind || 'none', 'showExportModal=', state.showExportModal, 'currentBets=', state.currentBets.length);
     // 导出 modal 打开时：点关闭按钮 / 点其他位置都关闭
     if (state.showExportModal) {
       state.showExportModal = false;
