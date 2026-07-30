@@ -904,10 +904,13 @@ function _doExport() {
     _restoreCanvas(oldW, oldH, oldScale);
   }, 10000);
 
-  // 调用截图：不传 canvas 字段（用主 canvas 默认）
+  // 调用截图：小游戏里是 Canvas 实例方法，不是 wx. 全局方法
   try {
-    console.log('[EXPORT] calling canvasToTempFilePath...');
-    wx.canvasToTempFilePath({
+    console.log('[EXPORT] calling canvas.toTempFilePath...');
+    if (typeof canvas.toTempFilePath !== 'function') {
+      throw new Error('canvas.toTempFilePath 不可用 (基础库 ' + (wx.getSystemInfoSync && wx.getSystemInfoSync().SDKVersion || 'unknown') + ')');
+    }
+    canvas.toTempFilePath({
       fileType: 'png',
       quality: 1,
       success: res => {
@@ -941,9 +944,11 @@ function _doExport() {
       responded = true;
       clearTimeout(timeoutId);
     }
-    console.error('[EXPORT] canvasToTempFilePath throw', e);
+    console.error('[EXPORT] canvas.toTempFilePath throw', e);
+    let em = (e && e.message) || e;
+    if (typeof em === 'object') em = JSON.stringify(em);
     state.exportState = 'failed';
-    state.exportMsg = '调用失败：' + (e.message || e);
+    state.exportMsg = '调用失败：' + em;
     markDirty();
     try { wx.showToast({ title: '调用失败', icon: 'none' }); } catch(e) {}
     _restoreCanvas(oldW, oldH, oldScale);
