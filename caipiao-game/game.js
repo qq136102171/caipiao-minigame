@@ -136,6 +136,9 @@ function initCanvas() {
   dpr = sys.pixelRatio || 1;
   W = sys.windowWidth;
   H = sys.windowHeight;
+  // 顶部 nav 高度 = 灵动岛安全区 top + 16
+  const safeTop = (sys.safeArea && sys.safeArea.top) || sys.statusBarHeight || 0;
+  NAV_BAR_H = Math.max(40, safeTop + 16);
   canvas.width = W * dpr;
   canvas.height = H * dpr;
   ctx = canvas.getContext('2d');
@@ -177,7 +180,7 @@ function inRect(x, y, rx, ry, rw, rh) {
 
 // ===== 几何常量 =====
 const PAD = 12;
-const NAV_BAR_H = 40;
+let NAV_BAR_H = 40;
 const STATUS_H = 22;
 const HEADER_H = 56;          // 票面顶部红色条
 const SECTION_GAP = 8;        // 区之间间隔
@@ -190,8 +193,17 @@ let layoutY; // 当前累加 y
 
 function drawNavBar() {
   fillRound(0, 0, W, NAV_BAR_H, 0, colorByLottery(state.lottery));
-  text('彩票投注方案生成器', W / 2, 11, { size: 16, weight: 'bold', color: '#fff', align: 'center' });
-  text(state.currentTime, W - PAD - 6, 12, { size: 12, color: 'rgba(255,255,255,0.85)', align: 'right' });
+  // 避开灵动岛：标题居中到 safeArea 水平中点
+  let safeLeft = 0, safeRight = W, safeTop = 0;
+  if (typeof wx !== 'undefined' && wx.getSystemInfoSync) {
+    try {
+      const sys = wx.getSystemInfoSync();
+      if (sys.safeArea) { safeLeft = sys.safeArea.left; safeRight = sys.safeArea.right; safeTop = sys.safeArea.top || 0; }
+    } catch(e) {}
+  }
+  const titleCx = (safeLeft + safeRight) / 2;
+  text('彩票投注方案生成器', titleCx, safeTop + 6, { size: 16, weight: 'bold', color: '#fff', align: 'center' });
+  text(state.currentTime, safeRight - PAD - 6, safeTop + 7, { size: 12, color: 'rgba(255,255,255,0.85)', align: 'right' });
   // 状态条
   ctx.fillStyle = '#f5f5f5';
   ctx.fillRect(0, NAV_BAR_H, W, STATUS_H);
@@ -234,6 +246,13 @@ function drawTicketCard() {
   drawGenerateButton(tx + 14, y, tw - 28, 40);
   layoutY.genBtnY = y;
   layoutY.genBtnH = 40;
+  y += 40 + 10;
+  // 导出按钮（独立行，醒目）
+  drawExportButton(tx + 14, y, tw - 28, 40);
+  layoutY.exportBtnX = tx + 14;
+  layoutY.exportBtnY = y;
+  layoutY.exportBtnW = tw - 28;
+  layoutY.exportBtnH = 40;
   y += 40 + 14;
 
   // 投注列表标题
@@ -290,6 +309,17 @@ function drawGenerateButton(x, y, w, h) {
   const label = state.generating ? '生成中...' : '生成一注';
   text(icon, x + 14, y + (h - 18) / 2, { size: 18 });
   text(label, x + w / 2 + 4, y + (h - 16) / 2, { size: 14, weight: 'bold', color: '#fff', align: 'center' });
+}
+
+function drawExportButton(x, y, w, h) {
+  const pressed = state.pressedBtn && state.pressedBtn.kind === 'export';
+  fillRound(x, y, w, h, 8, pressed ? '#4caf50' : '#fff');
+  ctx.strokeStyle = pressed ? '#4caf50' : colorByLottery(state.lottery);
+  ctx.lineWidth = 1.5;
+  roundedRectPath(x + 0.75, y + 0.75, w - 1.5, h - 1.5, 7.25);
+  ctx.stroke();
+  // 居中：icon + 文字
+  text('📷  导出彩票图片到相册', x + w / 2, y + (h - 14) / 2, { size: 14, weight: 'bold', color: colorByLottery(state.lottery), align: 'center' });
 }
 
 function drawBetRow(bet, analysis, y, tx, tw) {
@@ -577,6 +607,10 @@ function _hitTestButtons(clientX, clientY) {
   if (layoutY.genBtnY !== undefined) {
     const yGen = layoutY.genBtnY + state.scrollY;
     if (inRect(clientX, clientY, PAD + 14, yGen, tw - 28, layoutY.genBtnH)) return { kind: 'generate' };
+  }
+  if (layoutY.exportBtnX !== undefined) {
+    const yExp = layoutY.exportBtnY + state.scrollY;
+    if (inRect(clientX, clientY, layoutY.exportBtnX, yExp, layoutY.exportBtnW, layoutY.exportBtnH)) return { kind: 'export' };
   }
   return null;
 }
