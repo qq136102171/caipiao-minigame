@@ -989,9 +989,18 @@ function _saveToAlbum(tempPath) {
         const em = (err && err.errMsg) || JSON.stringify(err);
         const errno = (err && err.errno) || 0;
         state.exportState = 'failed';
-        // iOS 26 + 基础库 3.17.0 新错误码 1026 = 需要先调 wx.onNeedPrivacyAuthorization
-        if (errno === 1026 || em.indexOf('NeedPrivacyAuthoriz') >= 0 || em.indexOf('official popup') >= 0) {
-          state.exportMsg = '需要先授权隐私协议';
+        if (errno === 1026 || em.indexOf('NeedPrivacyAuthoriz') >= 0 || em.indexOf('official popup') >= 0 || em.indexOf('onNeedPrivacy') >= 0) {
+          state.exportMsg = '需要先授权隐私协议（点击查看教程）';
+        } else if (errno === 112 || em.indexOf('api scope') >= 0 || em.indexOf('privacy agreement') >= 0) {
+          // mp.weixin.qq.com 后台未声明相册写入 scope
+          state.exportMsg = '需后台配置：mp.weixin.qq.com → 设置 → 用户隐私保护指引 → 添加 Album scope';
+          // 用 modal 详细说明
+          try { wx.showModal({
+            title: '需要后台配置',
+            content: '请到 mp.weixin.qq.com 后台：\n\n设置 → 服务类目与隐私协议 → 用户隐私保护指引 → 添加「相册写入 (Album)」scope\n\n添加后重新提交审核。',
+            showCancel: false,
+            confirmText: '我知道了'
+          }); } catch(e) {}
         } else if (em.indexOf('auth deny') >= 0 || em.indexOf('authorize') >= 0) {
           state.exportMsg = '需要相册权限';
         } else if (em.indexOf('deny') >= 0 || em.indexOf('cancel') >= 0) {
@@ -1000,7 +1009,7 @@ function _saveToAlbum(tempPath) {
           state.exportMsg = '保存失败：' + em;
         }
         markDirty();
-        try { wx.showToast({ title: '保存失败：' + state.exportMsg, icon: 'none', duration: 3000 }); } catch(e) {}
+        try { wx.showToast({ title: '保存失败：' + state.exportMsg.substring(0,20), icon: 'none', duration: 3000 }); } catch(e) {}
       }
     });
   } catch (e) {
