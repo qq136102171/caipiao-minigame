@@ -857,6 +857,8 @@ function _buildListText() {
     lines.push('------------------------------');
     for (let i = 0; i < state.currentBets.length; i++) {
       const bet = state.currentBets[i];
+      // 诊断：打印每个 bet 的所有键
+      console.log('[buildListText] bet', i, 'keys=', Object.keys(bet), 'bet=', JSON.stringify(bet));
       lines.push(`第 ${pad(i + 1)} 注 (${bet.label || ''})`);
       // 用 try-catch 隔离每注的处理
       let primaryText = '';
