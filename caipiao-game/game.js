@@ -1014,109 +1014,116 @@ function _saveToAlbum(tempPath) {
   }
 }
 
-// 简化版导出图渲染（按物理像素 1:1 绘制，不需要 dpr 缩放）
+// 简洁清单导出图（用户要的就是这个）
+// 设计：800 x (动态高) 像素，白底黑字，每注一行
+// 格式：
+//   双色球 第 2026086 期
+//   生成时间：2026-07-30 19:48
+//   ────────────────────
+//   第 1 注 (A 组)
+//   红球：09 14 22 25 28 29
+//   蓝球：11
+//   第 2 注 (A 组)
+//   ...
+//   ────────────────────
+//   合计 6 注  共 12 元
+//   彩票仅为娱乐参考，请理性购彩
 function _renderTicketForExportRaw(W2, H2) {
-  const PAD2 = 32;
-  ctx.fillStyle = '#f5f5f5';
-  ctx.fillRect(0, 0, W2, H2);
-  const tx = PAD2, ty = 60;
-  const tw = W2 - PAD2 * 2;
-  const titleH = 110;
   const betCount = state.currentBets.length;
-  const betRowH = 90;
-  const betListH = betCount > 0 ? betCount * betRowH + (betCount - 1) * 10 : 90;
-  const footH = 200;
-  const th = titleH + 30 + betListH + 30 + footH;
-  ctx.fillStyle = '#fff';
-  ctx.beginPath();
-  ctx.moveTo(tx + 16, ty);
-  ctx.arcTo(tx + tw, ty, tx + tw, ty + 16, 16);
-  ctx.lineTo(tx + tw, ty + th - 16); ctx.arcTo(tx + tw, ty + th, tx + tw - 16, ty + th, 16);
-  ctx.lineTo(tx + 16, ty + th); ctx.arcTo(tx, ty + th, tx, ty + th - 16, 16);
-  ctx.lineTo(tx, ty + 16); ctx.arcTo(tx, ty, tx + 16, ty, 16);
-  ctx.closePath(); ctx.fill();
-  const color = colorByLottery(state.lottery);
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(tx + 16, ty);
-  ctx.arcTo(tx + tw, ty, tx + tw, ty + 16, 16);
-  ctx.lineTo(tx + tw, ty + titleH - 16); ctx.arcTo(tx + tw, ty + titleH, tx + tw - 16, ty + titleH, 16);
-  ctx.lineTo(tx + 16, ty + titleH); ctx.arcTo(tx, ty + titleH, tx, ty + titleH - 16, 16);
-  ctx.lineTo(tx, ty + 16); ctx.arcTo(tx, ty, tx + 16, ty, 16);
-  ctx.closePath(); ctx.fill();
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(tx, ty + titleH - 14, tw, 14);
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 38px sans-serif';
+  const LINE_H = 56;          // 每行高
+  const ROW_H = LINE_H * 3 + 16; // 每注 3 行 + 间距
+  const TITLE_H = 90;
+  const DIVIDER_H = 24;
+  const FOOTER_H = 80;
+  const TARGET_H = TITLE_H + 30 + (betCount > 0 ? betCount * ROW_H + 16 : 60) + DIVIDER_H + FOOTER_H + 40;
+  // 注意：H2 是参数（外部传 1200），但我们画的内容由 TARGET_H 决定
+  // 实际 canvas 已经 resize 到 800x1200，所以我们画在 0~TARGET_H 范围内，下方留白
+
+  // 背景白
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W2, H2);
+
+  // 标题
+  const tx = 40;
+  let y = 30;
+  ctx.fillStyle = '#222';
+  ctx.font = 'bold 36px sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  ctx.fillText(state.lottery === 'ssq' ? '双色球' : '大乐透', tx + 28, ty + 32);
+  const lotteryName = state.lottery === 'ssq' ? '双色球' : '大乐透';
   const issueText = state.historySummary.latestIssue ? `第 ${state.historySummary.latestIssue} 期参考` : '方案';
-  ctx.font = '20px sans-serif';
-  ctx.textAlign = 'right';
-  ctx.fillText(issueText, tx + tw - 28, ty + 36);
-  ctx.fillStyle = 'rgba(255,255,255,0.9)';
-  ctx.font = '16px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillText(state.lottery === 'ssq' ? '原始策略（4+2）' : '前区 5 + 后区 2', tx + 28, ty + 78);
+  ctx.fillText(`${lotteryName}  ${issueText}`, tx, y);
+  y += 50;
+  // 生成时间
   const now = new Date();
-  const timeStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  ctx.textAlign = 'right';
-  ctx.fillText(timeStr, tx + tw - 28, ty + 78);
-  let y = ty + titleH + 20;
-  ctx.strokeStyle = '#eee';
+  const timeStr = `生成时间：${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  ctx.fillStyle = '#888';
+  ctx.font = '20px sans-serif';
+  ctx.fillText(timeStr, tx, y);
+  y += 36;
+
+  // 分割线
+  ctx.strokeStyle = '#222';
+  ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(tx + 28, y); ctx.lineTo(tx + tw - 28, y); ctx.stroke();
+  ctx.moveTo(tx, y); ctx.lineTo(W2 - tx, y); ctx.stroke();
   y += 16;
+
   if (betCount === 0) {
     ctx.fillStyle = '#999';
     ctx.font = '24px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('点击生成一注后再导出', tx + tw / 2, y + 30);
-  } else {
-    for (let i = 0; i < betCount; i++) {
-      const bet = state.currentBets[i];
-      y = _drawExportBetRowRaw(ctx, bet, y, tx, tw);
-      y += 10;
-    }
+    ctx.fillText('点击生成一注后再导出', W2 / 2, y + 30);
+    return;
   }
-  y += 10;
-  ctx.strokeStyle = '#eee';
-  ctx.beginPath();
-  ctx.moveTo(tx + 28, y); ctx.lineTo(tx + tw - 28, y); ctx.stroke();
-  y += 20;
-  ctx.fillStyle = color;
-  ctx.font = 'bold 30px sans-serif';
+
+  // 每注
+  ctx.font = '24px sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText(state.totalBets + ' 注', tx + 28, y);
-  ctx.fillText(state.totalCost + ' 元', tx + 150, y);
-  const qrSize = 100;
-  const qrX = tx + tw - qrSize - 28;
-  const qrY = y - 6;
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(qrX, qrY, qrSize, qrSize);
-  ctx.fillStyle = '#222';
-  for (let r = 0; r < 14; r++) for (let cc = 0; cc < 14; cc++) {
-    if ((r * 7 + cc + (r * cc * 3)) % 3 === 0) {
-      ctx.fillRect(qrX + 6 + cc * 6.5, qrY + 6 + r * 6.5, 5, 5);
+  for (let i = 0; i < betCount; i++) {
+    const bet = state.currentBets[i];
+    const primary = bet.primary;
+    const secondary = bet.secondary;
+    // 注标题
+    ctx.fillStyle = '#e60012';
+    ctx.font = 'bold 26px sans-serif';
+    ctx.fillText(`第 ${bet.indexPadded} 注 (${bet.label})`, tx, y);
+    y += 36;
+    // 红球
+    ctx.fillStyle = '#e60012';
+    ctx.font = '28px sans-serif';
+    const primaryText = state.lottery === 'ssq' ? '红球：' : '前区：';
+    ctx.fillText(primaryText + primary.map(n => pad(n)).join('  '), tx, y);
+    y += 38;
+    // 蓝球
+    ctx.fillStyle = '#1976d2';
+    const secondaryText = state.lottery === 'ssq' ? '蓝球：' : '后区：';
+    ctx.fillText(secondaryText + secondary.map(n => pad(n)).join('  '), tx, y);
+    y += 42;
+    // 间隔线
+    if (i < betCount - 1) {
+      ctx.strokeStyle = '#eee';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(tx, y - 8); ctx.lineTo(W2 - tx, y - 8); ctx.stroke();
     }
   }
-  const cornerSize = 22;
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(qrX, qrY, cornerSize, cornerSize);
-  ctx.fillRect(qrX + qrSize - cornerSize, qrY, cornerSize, cornerSize);
-  ctx.fillRect(qrX, qrY + qrSize - cornerSize, cornerSize, cornerSize);
+  y += 6;
+  // 分割线
+  ctx.strokeStyle = '#222';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(tx, y); ctx.lineTo(W2 - tx, y); ctx.stroke();
+  y += 16;
+  // 合计
   ctx.fillStyle = '#222';
-  ctx.fillRect(qrX + 4, qrY + 4, cornerSize - 8, cornerSize - 8);
-  ctx.fillRect(qrX + qrSize - cornerSize + 4, qrY + 4, cornerSize - 8, cornerSize - 8);
-  ctx.fillRect(qrX + 4, qrY + qrSize - cornerSize + 4, cornerSize - 8, cornerSize - 8);
-  y += 60;
+  ctx.font = 'bold 28px sans-serif';
+  ctx.fillText(`合计  ${state.totalBets} 注   共 ${state.totalCost} 元`, tx, y);
+  y += 50;
+  // 免责声明
   ctx.fillStyle = '#999';
-  ctx.font = '18px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('彩票仅为娱乐参考 · 请理性购彩', tx + tw / 2, y);
-  y += 30;
-  ctx.fillText('—— 生成于 彩票投注方案生成器 ——', tx + tw / 2, y);
+  ctx.font = '20px sans-serif';
+  ctx.fillText('彩票仅为娱乐参考，请理性购彩', tx, y);
 }
 
 function _drawExportBetRowRaw(c, bet, y, tx, tw) {
