@@ -808,22 +808,61 @@ function _renderTicketForExport(ec, c) {
 
 function showExportModal() {
   if (state.currentBets.length === 0) {
-    state.exportState = 'failed';
-    state.exportMsg = '请先生成一注再导出';
-    state.showExportModal = true;
-    markDirty();
     try { wx.showToast({ title: '请先生成一注', icon: 'none' }); } catch(e) {}
     return;
   }
+  // 方案 A：直接复制纯文本到剪贴板（最稳，iOS 上 wx.setClipboardData 不需要权限）
+  const listText = _buildListText();
+  console.log('[EXPORT] list text:', listText);
+  try {
+    wx.setClipboardData({
+      data: listText,
+      success: () => {
+        console.log('[EXPORT] clipboard success');
+        try { wx.showToast({ title: '清单已复制，可发给店主', icon: 'success', duration: 3000 }); } catch(e) {}
+      },
+      fail: err => {
+        console.error('[EXPORT] clipboard fail', err);
+        try { wx.showModal({ title: '已生成清单', content: listText, showCancel: false, confirmText: '关闭' }); } catch(e) {}
+      }
+    });
+  } catch (e) {
+    console.error('[EXPORT] clipboard throw', e);
+    try { wx.showModal({ title: '已生成清单', content: listText, showCancel: false, confirmText: '关闭' }); } catch(e) {}
+  }
+  // 方案 B：尝试保存图片（用 canvas 截图，如果失败不影响主流程）
   state.showExportModal = true;
   state.exportState = 'rendering';
-  state.exportMsg = '正在生成图片…';
+  state.exportMsg = '正在保存图片…';
   markDirty();
-  try { wx.showLoading({ title: '生成图片中…', mask: true }); } catch(e) {}
   setTimeout(() => {
-    _doExport();
-    try { wx.hideLoading(); } catch(e) {}
-  }, 50);
+    try { _doExport(); } catch(e) { console.error('[EXPORT] image save err', e); }
+  }, 100);
+}
+
+function _buildListText() {
+  // 构建纯文本购买清单
+  const lines = [];
+  const lot = state.lottery === 'ssq' ? '双色球' : '大乐透';
+  const issue = state.historySummary.latestIssue ? `第 ${state.historySummary.latestIssue} 期参考` : '方案';
+  lines.push(`${lot}  ${issue}`);
+  const now = new Date();
+  const timeStr = `生成时间：${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  lines.push(timeStr);
+  lines.push('------------------------------');
+  for (const bet of state.currentBets) {
+    lines.push(`第 ${bet.indexPadded} 注 (${bet.label})`);
+    const primary = state.lottery === 'ssq' ? bet.reds : bet.fronts;
+    const secondary = state.lottery === 'ssq' ? [bet.blue] : bet.backs;
+    const primaryLabel = state.lottery === 'ssq' ? '红球' : '前区';
+    const secondaryLabel = state.lottery === 'ssq' ? '蓝球' : '后区';
+    lines.push(`${primaryLabel}：${primary.map(n => pad(n)).join('  ')}`);
+    lines.push(`${secondaryLabel}：${secondary.map(n => pad(n)).join('  ')}`);
+  }
+  lines.push('------------------------------');
+  lines.push(`合计  ${state.totalBets} 注   共 ${state.totalCost} 元`);
+  lines.push('彩票仅为娱乐参考，请理性购彩');
+  return lines.join('\n');
 }
 
 function _restoreCanvas(oldW, oldH, oldScale) {
