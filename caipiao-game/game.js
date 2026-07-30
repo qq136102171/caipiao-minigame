@@ -136,9 +136,9 @@ function initCanvas() {
   dpr = sys.pixelRatio || 1;
   W = sys.windowWidth;
   H = sys.windowHeight;
-  // 顶部 nav 高度 = 灵动岛安全区 top + 16
-  const safeTop = (sys.safeArea && sys.safeArea.top) || sys.statusBarHeight || 0;
-  NAV_BAR_H = Math.max(40, safeTop + 16);
+  // 固定 NAV_BAR_H = 60 (iPhone 灵动岛 + 状态栏 全部安全区) + 22 (status 副条) = 82
+  // 不用 safeArea.top 是因为小游戏在某些 iOS 版本里 safeArea.top 返回 0
+  NAV_BAR_H = 82;
   canvas.width = W * dpr;
   canvas.height = H * dpr;
   ctx = canvas.getContext('2d');
@@ -192,18 +192,15 @@ const LINE = 16;              // 单行 16px
 let layoutY; // 当前累加 y
 
 function drawNavBar() {
-  fillRound(0, 0, W, NAV_BAR_H, 0, colorByLottery(state.lottery));
-  // 避开灵动岛：标题居中到 safeArea 水平中点
-  let safeLeft = 0, safeRight = W, safeTop = 0;
-  if (typeof wx !== 'undefined' && wx.getSystemInfoSync) {
-    try {
-      const sys = wx.getSystemInfoSync();
-      if (sys.safeArea) { safeLeft = sys.safeArea.left; safeRight = sys.safeArea.right; safeTop = sys.safeArea.top || 0; }
-    } catch(e) {}
-  }
-  const titleCx = (safeLeft + safeRight) / 2;
-  text('彩票投注方案生成器', titleCx, safeTop + 6, { size: 16, weight: 'bold', color: '#fff', align: 'center' });
-  text(state.currentTime, safeRight - PAD - 6, safeTop + 7, { size: 12, color: 'rgba(255,255,255,0.85)', align: 'right' });
+  // 状态栏区域：顶部 0 ~ SAFE_TOP 用深色背景
+  ctx.fillStyle = colorByLottery(state.lottery);
+  ctx.fillRect(0, 0, W, NAV_BAR_H);
+  // 标题和时间放在状态栏 + 灵动岛安全区下方（y = SAFE_TOP + 4）
+  // 不再依赖 safeArea 动态值，使用固定的 SAFE_TOP=60（适配 iPhone 灵动岛 + 状态栏）
+  const SAFE_TOP = 60;
+  const titleCx = W / 2;
+  text('彩票投注方案生成器', titleCx, SAFE_TOP + 4, { size: 16, weight: 'bold', color: '#fff', align: 'center' });
+  text(state.currentTime, W - PAD - 6, SAFE_TOP + 6, { size: 12, color: 'rgba(255,255,255,0.85)', align: 'right' });
   // 状态条
   ctx.fillStyle = '#f5f5f5';
   ctx.fillRect(0, NAV_BAR_H, W, STATUS_H);
@@ -831,25 +828,40 @@ function showExportModal() {
 
 function _doExport() {
   try {
-    _getExportCanvas();
-    if (!_exportCanvas) { state.exportState = 'failed'; state.exportMsg = '创建画布失败'; markDirty(); return; }
-    const dpr = 2;  // 固定 dpr=2 保持高清
-    const W2 = 750, H2 = 1200;
-    _exportCanvas.width = W2 * dpr;
-    _exportCanvas.height = H2 * dpr;
-    _exportCtx.setTransform(1, 0, 0, 1, 0, 0);
-    _exportCtx.scale(dpr, dpr);
-    _renderTicketForExport(_exportCanvas, _exportCtx);
     state.exportState = 'saving';
     state.exportMsg = '正在保存到相册…';
     markDirty();
+    // 直接对主 canvas 截图（不传 canvas 字段 = 当前主 canvas）
+    // 主 canvas 物理尺寸 = W*dpr x H*dpr
+    // 我们要把「正在显示的票面」 + 「附图板」 一起截下来
+    // 简单方案：缩放主 canvas 画布尺寸临时为 750x1200 像素，截完恢复
+    const targetW = 750, targetH = 1200;
+    const oldW = canvas.width, oldH = canvas.height;
+    const oldScale = { setTransform: null };
+    // 保存旧 transform
+    try {
+      const m = ctx.getTransform();
+      oldScale.setTransform = m;
+    } catch(e) {}
+    canvas.width = targetW;
+    canvas.height = targetH;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // 画一个普通（无 dpr scale）的导出图
+    _renderTicketForExportRaw(targetW, targetH);
     wx.canvasToTempFilePath({
-      canvas: _exportCanvas,
       fileType: 'png',
       quality: 1,
       success: res => {
         const tempPath = res.tempFilePath;
         state.exportImgPath = tempPath;
+        // 恢复主 canvas
+        canvas.width = oldW;
+        canvas.height = oldH;
+        if (oldScale.setTransform) {
+          try { ctx.setTransform(oldScale.setTransform.a, oldScale.setTransform.b, oldScale.setTransform.c, oldScale.setTransform.d, oldScale.setTransform.e, oldScale.setTransform.f); } catch(e) { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
+        } else {
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
         wx.saveImageToPhotosAlbum({
           filePath: tempPath,
           success: () => {
@@ -863,12 +875,21 @@ function _doExport() {
             state.exportState = 'failed';
             const em = (err && err.errMsg) || '';
             if (em.indexOf('auth deny') >= 0 || em.indexOf('authorize') >= 0) {
-              state.exportMsg = '需要相册权限';
+              state.exportMsg = '需要相册权限，请去设置开启';
+            } else if (em.indexOf('deny') >= 0) {
+              state.exportMsg = '已取消保存';
             } else {
               state.exportMsg = '保存失败：' + em;
             }
             markDirty();
             try { wx.showToast({ title: '保存失败', icon: 'none', duration: 2000 }); } catch(e) {}
+            // 恢复主 canvas
+            canvas.width = oldW; canvas.height = oldH;
+            if (oldScale.setTransform) {
+              try { ctx.setTransform(oldScale.setTransform.a, oldScale.setTransform.b, oldScale.setTransform.c, oldScale.setTransform.d, oldScale.setTransform.e, oldScale.setTransform.f); } catch(e) { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
+            } else {
+              ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            }
           }
         });
       },
@@ -876,12 +897,183 @@ function _doExport() {
         state.exportState = 'failed';
         state.exportMsg = '导出失败：' + ((err && err.errMsg) || '');
         markDirty();
+        try { wx.showToast({ title: '导出失败', icon: 'none', duration: 2000 }); } catch(e) {}
+        // 恢复主 canvas
+        canvas.width = oldW; canvas.height = oldH;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       }
     });
   } catch (e) {
     state.exportState = 'failed';
     state.exportMsg = '异常：' + ((e && e.message) || e);
     markDirty();
+  }
+}
+
+// 简化版导出图渲染（按物理像素 1:1 绘制，不需要 dpr 缩放）
+function _renderTicketForExportRaw(W2, H2) {
+  const PAD2 = 32;
+  ctx.fillStyle = '#f5f5f5';
+  ctx.fillRect(0, 0, W2, H2);
+  const tx = PAD2, ty = 60;
+  const tw = W2 - PAD2 * 2;
+  const titleH = 110;
+  const betCount = state.currentBets.length;
+  const betRowH = 90;
+  const betListH = betCount > 0 ? betCount * betRowH + (betCount - 1) * 10 : 90;
+  const footH = 200;
+  const th = titleH + 30 + betListH + 30 + footH;
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.moveTo(tx + 16, ty);
+  ctx.arcTo(tx + tw, ty, tx + tw, ty + 16, 16);
+  ctx.lineTo(tx + tw, ty + th - 16); ctx.arcTo(tx + tw, ty + th, tx + tw - 16, ty + th, 16);
+  ctx.lineTo(tx + 16, ty + th); ctx.arcTo(tx, ty + th, tx, ty + th - 16, 16);
+  ctx.lineTo(tx, ty + 16); ctx.arcTo(tx, ty, tx + 16, ty, 16);
+  ctx.closePath(); ctx.fill();
+  const color = colorByLottery(state.lottery);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(tx + 16, ty);
+  ctx.arcTo(tx + tw, ty, tx + tw, ty + 16, 16);
+  ctx.lineTo(tx + tw, ty + titleH - 16); ctx.arcTo(tx + tw, ty + titleH, tx + tw - 16, ty + titleH, 16);
+  ctx.lineTo(tx + 16, ty + titleH); ctx.arcTo(tx, ty + titleH, tx, ty + titleH - 16, 16);
+  ctx.lineTo(tx, ty + 16); ctx.arcTo(tx, ty, tx + 16, ty, 16);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(tx, ty + titleH - 14, tw, 14);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 38px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText(state.lottery === 'ssq' ? '双色球' : '大乐透', tx + 28, ty + 32);
+  const issueText = state.historySummary.latestIssue ? `第 ${state.historySummary.latestIssue} 期参考` : '方案';
+  ctx.font = '20px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText(issueText, tx + tw - 28, ty + 36);
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(state.lottery === 'ssq' ? '原始策略（4+2）' : '前区 5 + 后区 2', tx + 28, ty + 78);
+  const now = new Date();
+  const timeStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  ctx.textAlign = 'right';
+  ctx.fillText(timeStr, tx + tw - 28, ty + 78);
+  let y = ty + titleH + 20;
+  ctx.strokeStyle = '#eee';
+  ctx.beginPath();
+  ctx.moveTo(tx + 28, y); ctx.lineTo(tx + tw - 28, y); ctx.stroke();
+  y += 16;
+  if (betCount === 0) {
+    ctx.fillStyle = '#999';
+    ctx.font = '24px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('点击生成一注后再导出', tx + tw / 2, y + 30);
+  } else {
+    for (let i = 0; i < betCount; i++) {
+      const bet = state.currentBets[i];
+      y = _drawExportBetRowRaw(ctx, bet, y, tx, tw);
+      y += 10;
+    }
+  }
+  y += 10;
+  ctx.strokeStyle = '#eee';
+  ctx.beginPath();
+  ctx.moveTo(tx + 28, y); ctx.lineTo(tx + tw - 28, y); ctx.stroke();
+  y += 20;
+  ctx.fillStyle = color;
+  ctx.font = 'bold 30px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(state.totalBets + ' 注', tx + 28, y);
+  ctx.fillText(state.totalCost + ' 元', tx + 150, y);
+  const qrSize = 100;
+  const qrX = tx + tw - qrSize - 28;
+  const qrY = y - 6;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(qrX, qrY, qrSize, qrSize);
+  ctx.fillStyle = '#222';
+  for (let r = 0; r < 14; r++) for (let cc = 0; cc < 14; cc++) {
+    if ((r * 7 + cc + (r * cc * 3)) % 3 === 0) {
+      ctx.fillRect(qrX + 6 + cc * 6.5, qrY + 6 + r * 6.5, 5, 5);
+    }
+  }
+  const cornerSize = 22;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(qrX, qrY, cornerSize, cornerSize);
+  ctx.fillRect(qrX + qrSize - cornerSize, qrY, cornerSize, cornerSize);
+  ctx.fillRect(qrX, qrY + qrSize - cornerSize, cornerSize, cornerSize);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(qrX + 4, qrY + 4, cornerSize - 8, cornerSize - 8);
+  ctx.fillRect(qrX + qrSize - cornerSize + 4, qrY + 4, cornerSize - 8, cornerSize - 8);
+  ctx.fillRect(qrX + 4, qrY + qrSize - cornerSize + 4, cornerSize - 8, cornerSize - 8);
+  y += 60;
+  ctx.fillStyle = '#999';
+  ctx.font = '18px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('彩票仅为娱乐参考 · 请理性购彩', tx + tw / 2, y);
+  y += 30;
+  ctx.fillText('—— 生成于 彩票投注方案生成器 ——', tx + tw / 2, y);
+}
+
+function _drawExportBetRowRaw(c, bet, y, tx, tw) {
+  const x = tx + 28;
+  const w = tw - 56;
+  const h = 80;
+  c.fillStyle = '#fafafa';
+  c.beginPath();
+  c.moveTo(x + 8, y); c.arcTo(x + w, y, x + w, y + 8, 8);
+  c.lineTo(x + w, y + h - 8); c.arcTo(x + w, y + h, x + w - 8, y + h, 8);
+  c.lineTo(x + 8, y + h); c.arcTo(x, y + h, x, y + h - 8, 8);
+  c.lineTo(x, y + 8); c.arcTo(x, y, x + 8, y, 8);
+  c.closePath(); c.fill();
+  const color = colorByLottery(state.lottery);
+  c.fillStyle = color;
+  c.beginPath();
+  c.moveTo(x + 20, y + 12); c.arcTo(x + 64, y + 12, x + 64, y + 56, 6);
+  c.lineTo(x + 64, y + 56); c.arcTo(x + 64, y + 62, x + 58, y + 62, 6);
+  c.lineTo(x + 20, y + 62); c.arcTo(x + 14, y + 62, x + 14, y + 56, 6);
+  c.lineTo(x + 14, y + 18); c.arcTo(x + 14, y + 12, x + 20, y + 12, 6);
+  c.closePath(); c.fill();
+  c.fillStyle = '#fff';
+  c.font = 'bold 22px sans-serif';
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillText(bet.indexPadded, x + 39, y + 38);
+  c.font = '12px sans-serif';
+  c.fillText(bet.label, x + 39, y + 72);
+  const primary = bet.primary;
+  const secondary = bet.secondary;
+  const ballStartX = x + 84;
+  const ballSize = 36;
+  const ballGap = 6;
+  for (let i = 0; i < primary.length; i++) {
+    _drawExportBallRaw(c, ballStartX + i * (ballSize + ballGap), y + 12, ballSize, primary[i]);
+  }
+  const sepX = ballStartX + primary.length * (ballSize + ballGap) + 4;
+  c.strokeStyle = '#ddd';
+  c.lineWidth = 1;
+  c.beginPath();
+  c.moveTo(sepX, y + 16); c.lineTo(sepX, y + 52); c.stroke();
+  for (let i = 0; i < secondary.length; i++) {
+    _drawExportBallRaw(c, sepX + 6 + i * (ballSize + ballGap), y + 12, ballSize, secondary[i], '#1976d2');
+  }
+  return y + h;
+}
+
+function _drawExportBallRaw(c, x, y, size, ball, fallbackColor) {
+  const col = ball.color || fallbackColor || '#e60012';
+  c.fillStyle = col;
+  c.beginPath();
+  c.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2);
+  c.fill();
+  c.fillStyle = '#fff';
+  c.font = 'bold 18px sans-serif';
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillText(ball.padded, x + size / 2, y + size / 2);
+  if (ball.freq) {
+    c.font = '10px sans-serif';
+    c.fillText(String(ball.freq), x + size / 2, y + size - 5);
   }
 }
 
