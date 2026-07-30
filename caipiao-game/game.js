@@ -243,17 +243,17 @@ function drawTicketCard() {
     y += 20;
   }
   // 生成按钮
-  drawGenerateButton(tx + 14, y, tw - 28, 40);
+  drawGenerateButton(tx + 14, y, tw - 28, 44);
   layoutY.genBtnY = y;
-  layoutY.genBtnH = 40;
-  y += 40 + 10;
+  layoutY.genBtnH = 44;
+  y += 44 + 16;  // 加 16px 间距，避免误触
   // 导出按钮（独立行，醒目）
-  drawExportButton(tx + 14, y, tw - 28, 40);
+  drawExportButton(tx + 14, y, tw - 28, 44);
   layoutY.exportBtnX = tx + 14;
   layoutY.exportBtnY = y;
   layoutY.exportBtnW = tw - 28;
-  layoutY.exportBtnH = 40;
-  y += 40 + 14;
+  layoutY.exportBtnH = 44;
+  y += 44 + 14;
 
   // 投注列表标题
   text('本期投注', tx + 14, y, { size: 12, color: '#666' });
@@ -600,16 +600,18 @@ function _hitTestButtons(clientX, clientY) {
   const innerW = tw - 28;
   const btnW = (innerW - 10) / 2;
   const btnH = 32;
-  // tabY 是 scrollY=0 时的坐标；屏幕坐标 = layout 坐标 + scrollY
-  const yTab = layoutY.tabY + state.scrollY;
+  // 关键：按钮是画在 ctx.translate(0, -scrollY) 坐标系下，
+  // 屏幕坐标 = layout 坐标 - scrollY
+  const sy = -state.scrollY;
+  const yTab = layoutY.tabY + sy;
   if (inRect(clientX, clientY, PAD + 14, yTab, btnW, btnH)) return { kind: 'tab', val: 'ssq' };
   if (inRect(clientX, clientY, PAD + 14 + btnW + 10, yTab, btnW, btnH)) return { kind: 'tab', val: 'dlt' };
   if (layoutY.genBtnY !== undefined) {
-    const yGen = layoutY.genBtnY + state.scrollY;
+    const yGen = layoutY.genBtnY + sy;
     if (inRect(clientX, clientY, PAD + 14, yGen, tw - 28, layoutY.genBtnH)) return { kind: 'generate' };
   }
   if (layoutY.exportBtnX !== undefined) {
-    const yExp = layoutY.exportBtnY + state.scrollY;
+    const yExp = layoutY.exportBtnY + sy;
     if (inRect(clientX, clientY, layoutY.exportBtnX, yExp, layoutY.exportBtnW, layoutY.exportBtnH)) return { kind: 'export' };
   }
   return null;
@@ -813,13 +815,18 @@ function showExportModal() {
     state.exportMsg = '请先生成一注再导出';
     state.showExportModal = true;
     markDirty();
+    try { wx.showToast({ title: '请先生成一注', icon: 'none' }); } catch(e) {}
     return;
   }
   state.showExportModal = true;
   state.exportState = 'rendering';
   state.exportMsg = '正在生成图片…';
   markDirty();
-  setTimeout(() => _doExport(), 50);
+  try { wx.showLoading({ title: '生成图片中…', mask: true }); } catch(e) {}
+  setTimeout(() => {
+    _doExport();
+    try { wx.hideLoading(); } catch(e) {}
+  }, 50);
 }
 
 function _doExport() {
@@ -849,6 +856,7 @@ function _doExport() {
             state.exportState = 'done';
             state.exportMsg = '✓ 已保存到相册';
             markDirty();
+            try { wx.showToast({ title: '已保存到相册', icon: 'success', duration: 2000 }); } catch(e) {}
             setTimeout(() => { state.showExportModal = false; markDirty(); }, 2500);
           },
           fail: err => {
@@ -860,6 +868,7 @@ function _doExport() {
               state.exportMsg = '保存失败：' + em;
             }
             markDirty();
+            try { wx.showToast({ title: '保存失败', icon: 'none', duration: 2000 }); } catch(e) {}
           }
         });
       },
