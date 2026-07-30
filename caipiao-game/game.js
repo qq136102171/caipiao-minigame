@@ -1262,6 +1262,8 @@ function setupTouch() {
         generate();
       } else if (state.pressedBtn.kind === 'generate' && !state.generating) {
         generate();
+      } else if (state.pressedBtn.kind === 'export') {
+        showExportModal();
       }
       state.pressedBtn = null;
       state.scrollVelocity = 0;
