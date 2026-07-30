@@ -826,86 +826,182 @@ function showExportModal() {
   }, 50);
 }
 
+function _restoreCanvas(oldW, oldH, oldScale) {
+  // 恢复主 canvas 尺寸
+  try { canvas.width = oldW; canvas.height = oldH; } catch(e) {}
+  if (oldScale) {
+    try { ctx.setTransform(oldScale.a, oldScale.b, oldScale.c, oldScale.d, oldScale.e, oldScale.f); } catch(e) { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
+  } else {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+}
+
 function _doExport() {
+  // iOS 26 小游戏已知问题：
+  //   1) wx.canvasToTempFilePath 不能传 wx.createOffscreenCanvas 创建的对象
+  //   2) 修改主 canvas.width/height 在 iOS 26 上会导致 canvasToTempFilePath 静默失败
+  //   3) canvasToTempFilePath 必须有 success / fail 回调，但有时两个都不调
+  // 解决方案：
+  //   - 不改主 canvas 尺寸
+  //   - 用主 canvas 直接画图
+  //   - canvasToTempFilePath 不传 canvas 字段
+  //   - 加 10 秒超时（防止回调不来时一直转圈）
+  //   - 详细错误日志输出到 console（用户能看 IDE 调试器）
+
+  state.exportState = 'saving';
+  state.exportMsg = '正在生成图片…';
+  markDirty();
+  console.log('[EXPORT] start, currentBets=', state.currentBets.length, 'dpr=', dpr, 'W=', W, 'H=', H);
+
+  // 保存主 canvas 当前状态
+  const oldW = canvas.width, oldH = canvas.height;
+  let oldScale = null;
+  try { oldScale = ctx.getTransform(); } catch(e) {}
+
+  // 设主 canvas 物理尺寸为 750x1200
+  // 注意：在 iOS 26 上这一步会导致下次 draw() 重新画才能显示
+  // 但 canvasToTempFilePath 必须在主 canvas 当前显示的内容上才能截到
+  const targetW = 750, targetH = 1200;
+  let resized = false;
   try {
-    state.exportState = 'saving';
-    state.exportMsg = '正在保存到相册…';
-    markDirty();
-    // 直接对主 canvas 截图（不传 canvas 字段 = 当前主 canvas）
-    // 主 canvas 物理尺寸 = W*dpr x H*dpr
-    // 我们要把「正在显示的票面」 + 「附图板」 一起截下来
-    // 简单方案：缩放主 canvas 画布尺寸临时为 750x1200 像素，截完恢复
-    const targetW = 750, targetH = 1200;
-    const oldW = canvas.width, oldH = canvas.height;
-    const oldScale = { setTransform: null };
-    // 保存旧 transform
-    try {
-      const m = ctx.getTransform();
-      oldScale.setTransform = m;
-    } catch(e) {}
     canvas.width = targetW;
     canvas.height = targetH;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    // 画一个普通（无 dpr scale）的导出图
+    resized = true;
+    console.log('[EXPORT] canvas resized to', canvas.width, 'x', canvas.height);
+  } catch (e) {
+    console.error('[EXPORT] resize failed', e);
+  }
+
+  // 重置 transform，按 1:1 像素画
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // 画导出图
+  try {
     _renderTicketForExportRaw(targetW, targetH);
+    console.log('[EXPORT] draw done');
+  } catch (e) {
+    console.error('[EXPORT] draw failed', e);
+    state.exportState = 'failed';
+    state.exportMsg = '画图失败：' + (e.message || e);
+    markDirty();
+    _restoreCanvas(oldW, oldH, oldScale);
+    return;
+  }
+
+  state.exportMsg = '正在保存到相册…';
+  markDirty();
+
+  // 10 秒超时保护（防止 success/fail 都不回调）
+  let responded = false;
+  const timeoutId = setTimeout(() => {
+    if (responded) return;
+    responded = true;
+    console.error('[EXPORT] TIMEOUT: canvasToTempFilePath no callback after 10s');
+    state.exportState = 'failed';
+    state.exportMsg = '截图超时（iOS 26 兼容问题）';
+    markDirty();
+    try { wx.showToast({ title: '截图超时', icon: 'none' }); } catch(e) {}
+    _restoreCanvas(oldW, oldH, oldScale);
+  }, 10000);
+
+  // 调用截图：不传 canvas 字段（用主 canvas 默认）
+  try {
+    console.log('[EXPORT] calling canvasToTempFilePath...');
     wx.canvasToTempFilePath({
       fileType: 'png',
       quality: 1,
       success: res => {
+        if (responded) return;
+        responded = true;
+        clearTimeout(timeoutId);
+        console.log('[EXPORT] canvasToTempFilePath success', res);
         const tempPath = res.tempFilePath;
         state.exportImgPath = tempPath;
-        // 恢复主 canvas
-        canvas.width = oldW;
-        canvas.height = oldH;
-        if (oldScale.setTransform) {
-          try { ctx.setTransform(oldScale.setTransform.a, oldScale.setTransform.b, oldScale.setTransform.c, oldScale.setTransform.d, oldScale.setTransform.e, oldScale.setTransform.f); } catch(e) { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
-        } else {
-          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        }
-        wx.saveImageToPhotosAlbum({
-          filePath: tempPath,
-          success: () => {
-            state.exportState = 'done';
-            state.exportMsg = '✓ 已保存到相册';
-            markDirty();
-            try { wx.showToast({ title: '已保存到相册', icon: 'success', duration: 2000 }); } catch(e) {}
-            setTimeout(() => { state.showExportModal = false; markDirty(); }, 2500);
-          },
-          fail: err => {
-            state.exportState = 'failed';
-            const em = (err && err.errMsg) || '';
-            if (em.indexOf('auth deny') >= 0 || em.indexOf('authorize') >= 0) {
-              state.exportMsg = '需要相册权限，请去设置开启';
-            } else if (em.indexOf('deny') >= 0) {
-              state.exportMsg = '已取消保存';
-            } else {
-              state.exportMsg = '保存失败：' + em;
-            }
-            markDirty();
-            try { wx.showToast({ title: '保存失败', icon: 'none', duration: 2000 }); } catch(e) {}
-            // 恢复主 canvas
-            canvas.width = oldW; canvas.height = oldH;
-            if (oldScale.setTransform) {
-              try { ctx.setTransform(oldScale.setTransform.a, oldScale.setTransform.b, oldScale.setTransform.c, oldScale.setTransform.d, oldScale.setTransform.e, oldScale.setTransform.f); } catch(e) { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
-            } else {
-              ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-            }
-          }
-        });
+        _restoreCanvas(oldW, oldH, oldScale);
+        // 触发下次 draw 恢复
+        markDirty();
+        // 保存到相册
+        _saveToAlbum(tempPath);
       },
       fail: err => {
+        if (responded) return;
+        responded = true;
+        clearTimeout(timeoutId);
+        console.error('[EXPORT] canvasToTempFilePath fail', err);
+        const em = (err && err.errMsg) || JSON.stringify(err);
         state.exportState = 'failed';
-        state.exportMsg = '导出失败：' + ((err && err.errMsg) || '');
+        state.exportMsg = '截图失败：' + em;
         markDirty();
-        try { wx.showToast({ title: '导出失败', icon: 'none', duration: 2000 }); } catch(e) {}
-        // 恢复主 canvas
-        canvas.width = oldW; canvas.height = oldH;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        try { wx.showToast({ title: '截图失败', icon: 'none' }); } catch(e) {}
+        _restoreCanvas(oldW, oldH, oldScale);
       }
     });
   } catch (e) {
+    if (!responded) {
+      responded = true;
+      clearTimeout(timeoutId);
+    }
+    console.error('[EXPORT] canvasToTempFilePath throw', e);
     state.exportState = 'failed';
-    state.exportMsg = '异常：' + ((e && e.message) || e);
+    state.exportMsg = '调用失败：' + (e.message || e);
+    markDirty();
+    try { wx.showToast({ title: '调用失败', icon: 'none' }); } catch(e) {}
+    _restoreCanvas(oldW, oldH, oldScale);
+  }
+}
+
+function _saveToAlbum(tempPath) {
+  let responded = false;
+  const timeoutId = setTimeout(() => {
+    if (responded) return;
+    responded = true;
+    console.error('[EXPORT] saveImageToPhotosAlbum TIMEOUT');
+    state.exportState = 'failed';
+    state.exportMsg = '保存超时';
+    markDirty();
+    try { wx.showToast({ title: '保存超时', icon: 'none' }); } catch(e) {}
+  }, 10000);
+  try {
+    console.log('[EXPORT] calling saveImageToPhotosAlbum', tempPath);
+    wx.saveImageToPhotosAlbum({
+      filePath: tempPath,
+      success: () => {
+        if (responded) return;
+        responded = true;
+        clearTimeout(timeoutId);
+        console.log('[EXPORT] saveImageToPhotosAlbum success');
+        state.exportState = 'done';
+        state.exportMsg = '✓ 已保存到相册';
+        markDirty();
+        try { wx.showToast({ title: '已保存到相册', icon: 'success', duration: 2000 }); } catch(e) {}
+        setTimeout(() => { state.showExportModal = false; markDirty(); }, 2500);
+      },
+      fail: err => {
+        if (responded) return;
+        responded = true;
+        clearTimeout(timeoutId);
+        console.error('[EXPORT] saveImageToPhotosAlbum fail', err);
+        const em = (err && err.errMsg) || JSON.stringify(err);
+        state.exportState = 'failed';
+        if (em.indexOf('auth deny') >= 0 || em.indexOf('authorize') >= 0) {
+          state.exportMsg = '需要相册权限';
+        } else if (em.indexOf('deny') >= 0 || em.indexOf('cancel') >= 0) {
+          state.exportMsg = '已取消保存';
+        } else {
+          state.exportMsg = '保存失败：' + em;
+        }
+        markDirty();
+        try { wx.showToast({ title: '保存失败：' + em, icon: 'none', duration: 3000 }); } catch(e) {}
+      }
+    });
+  } catch (e) {
+    if (!responded) {
+      responded = true;
+      clearTimeout(timeoutId);
+    }
+    console.error('[EXPORT] saveImageToPhotosAlbum throw', e);
+    state.exportState = 'failed';
+    state.exportMsg = '调用失败：' + (e.message || e);
     markDirty();
   }
 }
