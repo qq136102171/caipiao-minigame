@@ -117,12 +117,14 @@ function generate() {
     console.error('生成失败:', err);
   } finally {
     state.generating = false;
+    markDirty();
   }
 }
 
 function updateTime() {
   const d = new Date();
   state.currentTime = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  markDirty();
 }
 
 // ===== 画布 =====
@@ -251,11 +253,12 @@ function drawTicketCard() {
 
   // 底部摘要
   y += 4;
+  ctx.save();
   ctx.strokeStyle = '#eee';
   ctx.setLineDash([4, 4]);
   ctx.beginPath();
   ctx.moveTo(tx + 14, y); ctx.lineTo(tx + tw - 14, y); ctx.stroke();
-  ctx.setLineDash([]);
+  ctx.restore();
   y += 10;
   text(`${state.totalBets} 注`, tx + 14, y, { size: 14, weight: 'bold', color: colorByLottery(state.lottery) });
   text(`${state.totalCost} 元`, tx + 80, y, { size: 14, weight: 'bold', color: colorByLottery(state.lottery) });
@@ -325,20 +328,32 @@ function drawBetRow(bet, analysis, y, tx, tw) {
   return y + h;
 }
 
+const _ballGradCache = new Map();
+function _getBallGrad(color, size) {
+  const key = color + ':' + size;
+  let g = _ballGradCache.get(key);
+  if (g) return g;
+  g = ctx.createRadialGradient(0, 0, 1, 0, 0, size / 2);
+  g.addColorStop(0, 'rgba(255,255,255,0.45)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  _ballGradCache.set(key, g);
+  return g;
+}
 function drawBall(x, y, size, ball, fallbackColor) {
   const c = ball.color || fallbackColor || '#e60012';
+  // 实心球
   ctx.fillStyle = c;
   ctx.beginPath();
   ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2);
   ctx.fill();
-  // 渐变高光
-  const g = ctx.createRadialGradient(x + size * 0.4, y + size * 0.4, 1, x + size / 2, y + size / 2, size / 2);
-  g.addColorStop(0, 'rgba(255,255,255,0.45)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = g;
+  // 高光（一次性 createRadialGradient，按 (color, size) 缓存复用）
+  ctx.save();
+  ctx.translate(x + size / 2, y + size / 2);
+  ctx.fillStyle = _getBallGrad(c, size);
   ctx.beginPath();
-  ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2);
+  ctx.arc(0, 0, size / 2, 0, Math.PI * 2);
   ctx.fill();
+  ctx.restore();
   text(ball.padded, x + size / 2, y + size / 2 - 7, { size: 11, weight: 'bold', color: '#fff', align: 'center' });
   if (ball.freq) {
     text(String(ball.freq), x + size / 2, y + size - 5, { size: 7, color: 'rgba(255,255,255,0.85)', align: 'center' });
@@ -480,18 +495,25 @@ function updateScrollBounds() {
   state.scrollMax = Math.max(0, layoutY.totalH - H);
   if (state.scrollY < state.scrollMin) state.scrollY = state.scrollMin;
   if (state.scrollY > state.scrollMax) state.scrollY = state.scrollMax;
+  markDirty();
 }
 
 function draw() {
   computeLayout();
   updateScrollBounds();
+  // 背景
   ctx.fillStyle = '#f5f5f5';
   ctx.fillRect(0, 0, W, H);
+  // 顶部 nav + status
   drawNavBar();
+  // 滚动内容：translate + 视口裁剪
+  const top = NAV_BAR_H + STATUS_H;
   ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, top, W, H - top);
+  ctx.clip();
   ctx.translate(0, -state.scrollY);
   drawTicketCard();
-  // 附加面板：从 ticketH 之后开始
   let y = layoutY.startY + layoutY.ticketH + SECTION_GAP;
   if (state.lottery === 'ssq') {
     y = drawStructures(y) + SECTION_GAP;
@@ -535,6 +557,7 @@ function _startInertia(initialVel) {
       state.scrollY = Math.max(state.scrollMin, Math.min(state.scrollMax, state.scrollY));
       state.scrollVelocity = 0;
       _inertiaRAF = null;
+      markDirty();
       return;
     }
     state.scrollY += v * dt;
@@ -542,9 +565,11 @@ function _startInertia(initialVel) {
     if (state.scrollY > state.scrollMax) state.scrollY = state.scrollMax;
     const decay = Math.pow(friction, dt / 16.67);
     v *= decay;
+    markDirty();
     if (Math.abs(v) < stop) {
       state.scrollVelocity = 0;
       _inertiaRAF = null;
+      markDirty();
       return;
     }
     _inertiaRAF = requestAnimationFrame(step);
@@ -573,6 +598,7 @@ function setupTouch() {
     state.scrollY -= dy;
     if (state.scrollY < state.scrollMin) state.scrollY = state.scrollMin;
     if (state.scrollY > state.scrollMax) state.scrollY = state.scrollMax;
+    markDirty();
     // 估算速度（同样翻转符号）
     const now = Date.now();
     const dt = Math.max(1, now - state.touchStartTime);
@@ -602,8 +628,14 @@ function setupTouch() {
   });
 }
 
+// 渲染节流：只在脏状态时重绘
+let _dirty = true;
+function markDirty() { _dirty = true; }
 function loop() {
-  draw();
+  if (_dirty) {
+    _dirty = false;
+    draw();
+  }
   requestAnimationFrame(loop);
 }
 
