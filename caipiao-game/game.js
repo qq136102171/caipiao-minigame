@@ -857,38 +857,28 @@ function _buildListText() {
     lines.push('------------------------------');
     for (let i = 0; i < state.currentBets.length; i++) {
       const bet = state.currentBets[i];
-      // 诊断：打印每个 bet 的所有键
-      console.log('[buildListText] bet', i, 'keys=', Object.keys(bet), 'bet=', JSON.stringify(bet));
-      lines.push(`第 ${pad(i + 1)} 注 (${bet.label || ''})`);
-      // 用 try-catch 隔离每注的处理
-      let primaryText = '';
-      let secondaryText = '';
+      // bet 实际结构是 { index, indexPadded, label, primary: [{number, padded, ...}, ...], secondary: [...] }
+      // primary/secondary 里的对象是 ballForRender 的结果，数字在 .number 字段
+      const primaryLabel = state.lottery === 'ssq' ? '红球' : '前区';
+      const secondaryLabel = state.lottery === 'ssq' ? '蓝球' : '后区';
+      let primaryNums = [];
+      let secondaryNums = [];
       try {
-        // 容错：兼容各种字段名
-        let primary, secondary, primaryLabel, secondaryLabel;
-        if (state.lottery === 'ssq') {
-          primary = bet.reds || bet.fronts || [];
-          secondary = bet.blue != null ? [bet.blue] : (bet.backs || []);
-          primaryLabel = '红球';
-          secondaryLabel = '蓝球';
-        } else {
-          primary = bet.fronts || bet.reds || [];
-          secondary = bet.backs || (bet.blue != null ? [bet.blue] : []) || [];
-          primaryLabel = '前区';
-          secondaryLabel = '后区';
+        // 主区：取 primary 数组的 number
+        if (Array.isArray(bet.primary)) {
+          primaryNums = bet.primary.map(b => (b && b.number != null) ? b.number : NaN).filter(n => !isNaN(n));
         }
-        // 容错：如果 primary/secondary 不是数组
-        if (!Array.isArray(primary)) primary = [];
-        if (!Array.isArray(secondary)) secondary = [];
-        primaryText = primaryLabel + '：' + primary.map(n => pad(Number(n) || 0)).join('  ');
-        secondaryText = secondaryLabel + '：' + secondary.map(n => pad(Number(n) || 0)).join('  ');
+        // 副区：取 secondary 数组的 number
+        if (Array.isArray(bet.secondary)) {
+          secondaryNums = bet.secondary.map(b => (b && b.number != null) ? b.number : NaN).filter(n => !isNaN(n));
+        }
       } catch (e) {
         console.error('[buildListText] bet error', i, e);
-        primaryText = '红球：数据错误';
-        secondaryText = '蓝球：数据错误';
       }
-      lines.push(primaryText);
-      lines.push(secondaryText);
+      const indexLabel = bet.indexPadded || pad(i + 1);
+      lines.push(`第 ${indexLabel} 注 (${bet.label || ''})`);
+      lines.push(primaryLabel + '：' + primaryNums.map(n => pad(Number(n) || 0)).join('  '));
+      lines.push(secondaryLabel + '：' + secondaryNums.map(n => pad(Number(n) || 0)).join('  '));
     }
     lines.push('------------------------------');
     lines.push(`合计  ${state.totalBets} 注   共 ${state.totalCost} 元`);
