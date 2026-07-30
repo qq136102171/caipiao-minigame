@@ -522,7 +522,7 @@ function _hitTestButtons(clientX, clientY) {
 
 let _inertiaRAF = null;
 function _startInertia(initialVel) {
-  // initialVel: px/ms，正=继续向下，负=继续向上
+  // initialVel: px/ms，正=继续向下滚动（看下方），负=继续向上滚动（看上方）
   let v = initialVel;
   const friction = 0.92;   // 每 16.67ms 衰减 8%
   const stop = 0.04;        // 低于这个速度就停
@@ -569,14 +569,14 @@ function setupTouch() {
     const dy = curY - state.touchLastY;   // 上一帧增量
     state.touchLastY = curY;
     if (Math.abs(curY - state.touchStartY) > 4) state.pressedBtn = null;
-    // 增量累加：手指上滑 dy<0 → scrollY 增大（向下滑动看下方内容）
-    state.scrollY += dy;
+    // 增量累加：手指上滑 dy<0 → scrollY 增大（看下方内容，符合自然滚动）
+    state.scrollY -= dy;
     if (state.scrollY < state.scrollMin) state.scrollY = state.scrollMin;
     if (state.scrollY > state.scrollMax) state.scrollY = state.scrollMax;
-    // 估算速度
+    // 估算速度（同样翻转符号）
     const now = Date.now();
     const dt = Math.max(1, now - state.touchStartTime);
-    state.scrollVelocity = (state.scrollY - state.touchStartScroll) / dt;
+    state.scrollVelocity = -(state.scrollY - state.touchStartScroll) / dt;
   });
   wx.onTouchEnd(() => {
     // 先看是否是按钮点击
