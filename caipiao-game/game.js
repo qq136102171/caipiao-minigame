@@ -837,19 +837,10 @@ function _restoreCanvas(oldW, oldH, oldScale) {
 }
 
 function _doExport() {
-  // iOS 26 小游戏已知问题：
-  //   1) wx.canvasToTempFilePath 不能传 wx.createOffscreenCanvas 创建的对象
-  //   2) 修改主 canvas.width/height 在 iOS 26 上会导致 canvasToTempFilePath 静默失败
-  //   3) canvasToTempFilePath 必须有 success / fail 回调，但有时两个都不调
-  // 解决方案：
-  //   - 不改主 canvas 尺寸
-  //   - 用主 canvas 直接画图
-  //   - canvasToTempFilePath 不传 canvas 字段
-  //   - 加 10 秒超时（防止回调不来时一直转圈）
-  //   - 详细错误日志输出到 console（用户能看 IDE 调试器）
-
+  // 关键：先关闭 modal（避免半透明层被截进图）
+  state.showExportModal = false;
   state.exportState = 'saving';
-  state.exportMsg = '正在生成图片…';
+  state.exportMsg = '正在保存…';
   markDirty();
   console.log('[EXPORT] start, currentBets=', state.currentBets.length, 'dpr=', dpr, 'W=', W, 'H=', H);
 
@@ -859,8 +850,6 @@ function _doExport() {
   try { oldScale = ctx.getTransform(); } catch(e) {}
 
   // 设主 canvas 物理尺寸为 750x1200
-  // 注意：在 iOS 26 上这一步会导致下次 draw() 重新画才能显示
-  // 但 canvasToTempFilePath 必须在主 canvas 当前显示的内容上才能截到
   const targetW = 750, targetH = 1200;
   let resized = false;
   try {
@@ -872,10 +861,13 @@ function _doExport() {
     console.error('[EXPORT] resize failed', e);
   }
 
-  // 重置 transform，按 1:1 像素画
+  // 完整重置 transform：scale(dpr) + translate + dpr 归零
+  // 之前用 ctx.setTransform(1,0,0,1,0,0) 可能没彻底清掉
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(1, 1);
+  ctx.translate(0, 0);
 
-  // 画导出图
+  // 画导出图（用清理过的 ctx）
   try {
     _renderTicketForExportRaw(targetW, targetH);
     console.log('[EXPORT] draw done');
@@ -891,24 +883,24 @@ function _doExport() {
   state.exportMsg = '正在保存到相册…';
   markDirty();
 
-  // 10 秒超时保护（防止 success/fail 都不回调）
+  // 10 秒超时保护
   let responded = false;
   const timeoutId = setTimeout(() => {
     if (responded) return;
     responded = true;
     console.error('[EXPORT] TIMEOUT: canvasToTempFilePath no callback after 10s');
     state.exportState = 'failed';
-    state.exportMsg = '截图超时（iOS 26 兼容问题）';
+    state.exportMsg = '截图超时';
     markDirty();
     try { wx.showToast({ title: '截图超时', icon: 'none' }); } catch(e) {}
     _restoreCanvas(oldW, oldH, oldScale);
   }, 10000);
 
-  // 调用截图：小游戏里是 Canvas 实例方法，不是 wx. 全局方法
+  // 截图
   try {
     console.log('[EXPORT] calling canvas.toTempFilePath...');
     if (typeof canvas.toTempFilePath !== 'function') {
-      throw new Error('canvas.toTempFilePath 不可用 (基础库 ' + (wx.getSystemInfoSync && wx.getSystemInfoSync().SDKVersion || 'unknown') + ')');
+      throw new Error('canvas.toTempFilePath 不可用');
     }
     canvas.toTempFilePath({
       fileType: 'png',
@@ -921,9 +913,7 @@ function _doExport() {
         const tempPath = res.tempFilePath;
         state.exportImgPath = tempPath;
         _restoreCanvas(oldW, oldH, oldScale);
-        // 触发下次 draw 恢复
         markDirty();
-        // 保存到相册
         _saveToAlbum(tempPath);
       },
       fail: err => {
