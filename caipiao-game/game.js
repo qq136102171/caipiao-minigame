@@ -987,8 +987,12 @@ function _saveToAlbum(tempPath) {
         clearTimeout(timeoutId);
         console.error('[EXPORT] saveImageToPhotosAlbum fail', err);
         const em = (err && err.errMsg) || JSON.stringify(err);
+        const errno = (err && err.errno) || 0;
         state.exportState = 'failed';
-        if (em.indexOf('auth deny') >= 0 || em.indexOf('authorize') >= 0) {
+        // iOS 26 + 基础库 3.17.0 新错误码 1026 = 需要先调 wx.onNeedPrivacyAuthorization
+        if (errno === 1026 || em.indexOf('NeedPrivacyAuthoriz') >= 0 || em.indexOf('official popup') >= 0) {
+          state.exportMsg = '需要先授权隐私协议';
+        } else if (em.indexOf('auth deny') >= 0 || em.indexOf('authorize') >= 0) {
           state.exportMsg = '需要相册权限';
         } else if (em.indexOf('deny') >= 0 || em.indexOf('cancel') >= 0) {
           state.exportMsg = '已取消保存';
@@ -996,7 +1000,7 @@ function _saveToAlbum(tempPath) {
           state.exportMsg = '保存失败：' + em;
         }
         markDirty();
-        try { wx.showToast({ title: '保存失败：' + em, icon: 'none', duration: 3000 }); } catch(e) {}
+        try { wx.showToast({ title: '保存失败：' + state.exportMsg, icon: 'none', duration: 3000 }); } catch(e) {}
       }
     });
   } catch (e) {
@@ -1296,6 +1300,47 @@ function loop() {
 }
 
 // ===== 启动 =====
+// 注册全局隐私授权回调（iOS 14+ 微信基础库 3.x 要求）
+// 没有这个回调，wx.saveImageToPhotosAlbum 会返回 errno 1026
+let _privacyResolve = null;
+wx.onNeedPrivacyAuthorization((resolve, eventInfo) => {
+  console.log('[PRIVACY] onNeedPrivacyAuthorization event=', eventInfo);
+  // 缓存 resolve，等用户操作后再调用
+  _privacyResolve = resolve;
+  // 用 wx.showModal 模拟一个简单隐私弹窗
+  // 注意：正式上线时需要做更友好的自定义弹窗 UI
+  try {
+    wx.showModal({
+      title: '授权提示',
+      content: '需要您的相册权限才能保存彩票图片到手机相册。是否同意？',
+      confirmText: '同意',
+      cancelText: '拒绝',
+      success: (res) => {
+        if (res.confirm) {
+          console.log('[PRIVACY] user agreed');
+          resolve({ event: 'agree' });
+        } else {
+          console.log('[PRIVACY] user disagreed');
+          resolve({ event: 'disagree' });
+        }
+        _privacyResolve = null;
+      },
+      fail: () => {
+        resolve({ event: 'disagree' });
+        _privacyResolve = null;
+      }
+    });
+  } catch (e) {
+    console.error('[PRIVACY] showModal error', e);
+    resolve({ event: 'agree' });  // fallback: 让流程继续走
+    _privacyResolve = null;
+  }
+});
+// 旧版 API 兼容：iOS 26 上可能也需要 wx.openPrivacyContract / wx.requirePrivacyAuthorize
+if (typeof wx.requirePrivacyAuthorize === 'function') {
+  console.log('[PRIVACY] wx.requirePrivacyAuthorize available');
+}
+
 initCanvas();
 updateTime();
 setInterval(updateTime, 60000);
