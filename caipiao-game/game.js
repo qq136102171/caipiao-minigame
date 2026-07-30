@@ -26,7 +26,12 @@ const state = {
   scrollY: 0,
   pressedBtn: null,
   touchStartY: 0,
+  touchLastY: 0,
   touchStartScroll: 0,
+  touchStartTime: 0,
+  scrollVelocity: 0,   // px/ms，手指抬起后用此值做惯性
+  scrollMin: 0,       // 动态边界
+  scrollMax: 0,
 };
 
 // ===== 工具 =====
@@ -470,8 +475,16 @@ function computeLayout() {
   layoutY.totalH = y;
 }
 
+function updateScrollBounds() {
+  state.scrollMin = 0;
+  state.scrollMax = Math.max(0, layoutY.totalH - H);
+  if (state.scrollY < state.scrollMin) state.scrollY = state.scrollMin;
+  if (state.scrollY > state.scrollMax) state.scrollY = state.scrollMax;
+}
+
 function draw() {
   computeLayout();
+  updateScrollBounds();
   ctx.fillStyle = '#f5f5f5';
   ctx.fillRect(0, 0, W, H);
   drawNavBar();
@@ -490,38 +503,83 @@ function draw() {
   ctx.restore();
 }
 
+function _hitTestButtons(clientX, clientY) {
+  if (!layoutY || layoutY.tabY === undefined) return null;
+  const tw = W - PAD * 2;
+  const innerW = tw - 28;
+  const btnW = (innerW - 10) / 2;
+  const btnH = 32;
+  // tabY 是 scrollY=0 时的坐标；屏幕坐标 = layout 坐标 + scrollY
+  const yTab = layoutY.tabY + state.scrollY;
+  if (inRect(clientX, clientY, PAD + 14, yTab, btnW, btnH)) return { kind: 'tab', val: 'ssq' };
+  if (inRect(clientX, clientY, PAD + 14 + btnW + 10, yTab, btnW, btnH)) return { kind: 'tab', val: 'dlt' };
+  if (layoutY.genBtnY !== undefined) {
+    const yGen = layoutY.genBtnY + state.scrollY;
+    if (inRect(clientX, clientY, PAD + 14, yGen, tw - 28, layoutY.genBtnH)) return { kind: 'generate' };
+  }
+  return null;
+}
+
+let _inertiaRAF = null;
+function _startInertia(initialVel) {
+  // initialVel: px/ms，正=继续向下，负=继续向上
+  let v = initialVel;
+  const friction = 0.92;   // 每 16.67ms 衰减 8%
+  const stop = 0.04;        // 低于这个速度就停
+  if (_inertiaRAF) cancelAnimationFrame(_inertiaRAF);
+  let last = performance.now();
+  function step(now) {
+    const dt = now - last;
+    last = now;
+    if (state.scrollY <= state.scrollMin || state.scrollY >= state.scrollMax) {
+      state.scrollY = Math.max(state.scrollMin, Math.min(state.scrollMax, state.scrollY));
+      state.scrollVelocity = 0;
+      _inertiaRAF = null;
+      return;
+    }
+    state.scrollY += v * dt;
+    if (state.scrollY < state.scrollMin) state.scrollY = state.scrollMin;
+    if (state.scrollY > state.scrollMax) state.scrollY = state.scrollMax;
+    const decay = Math.pow(friction, dt / 16.67);
+    v *= decay;
+    if (Math.abs(v) < stop) {
+      state.scrollVelocity = 0;
+      _inertiaRAF = null;
+      return;
+    }
+    _inertiaRAF = requestAnimationFrame(step);
+  }
+  _inertiaRAF = requestAnimationFrame(step);
+}
+
 function setupTouch() {
   wx.onTouchStart(e => {
     const t = e.touches[0];
     state.touchStartY = t.clientY;
+    state.touchLastY = t.clientY;
     state.touchStartScroll = state.scrollY;
-    state.pressedBtn = null;
-    // 彩种按钮
-    if (layoutY && layoutY.tabY !== undefined) {
-      const tw = W - PAD * 2;
-      const innerW = tw - 28;
-      const btnW = (innerW - 10) / 2;
-      const btnH = 32;
-      if (inRect(t.clientX, t.clientY, PAD + 14, layoutY.tabY, btnW, btnH)) {
-        state.pressedBtn = { kind: 'tab', val: 'ssq' };
-      } else if (inRect(t.clientX, t.clientY, PAD + 14 + btnW + 10, layoutY.tabY, btnW, btnH)) {
-        state.pressedBtn = { kind: 'tab', val: 'dlt' };
-      }
-    }
-    // 生成按钮
-    if (state.pressedBtn === null && layoutY && layoutY.genBtnY !== undefined) {
-      const tw = W - PAD * 2;
-      if (inRect(t.clientX, t.clientY, PAD + 14, layoutY.genBtnY, tw - 28, layoutY.genBtnH)) {
-        state.pressedBtn = { kind: 'generate' };
-      }
-    }
+    state.touchStartTime = Date.now();
+    state.scrollVelocity = 0;   // 重新触摸取消惯性
+    if (_inertiaRAF) { cancelAnimationFrame(_inertiaRAF); _inertiaRAF = null; }
+    state.pressedBtn = _hitTestButtons(t.clientX, t.clientY);
   });
   wx.onTouchMove(e => {
-    const dy = e.touches[0].clientY - state.touchStartY;
-    if (Math.abs(dy) > 4) state.pressedBtn = null;
-    state.scrollY = Math.max(0, Math.min(state.scrollY, Math.max(0, layoutY.totalH - H + 60)) - (state.touchStartScroll - (state.touchStartY - e.touches[0].clientY)));
+    const t = e.touches[0];
+    const curY = t.clientY;
+    const dy = curY - state.touchLastY;   // 上一帧增量
+    state.touchLastY = curY;
+    if (Math.abs(curY - state.touchStartY) > 4) state.pressedBtn = null;
+    // 增量累加：手指上滑 dy<0 → scrollY 增大（向下滑动看下方内容）
+    state.scrollY += dy;
+    if (state.scrollY < state.scrollMin) state.scrollY = state.scrollMin;
+    if (state.scrollY > state.scrollMax) state.scrollY = state.scrollMax;
+    // 估算速度
+    const now = Date.now();
+    const dt = Math.max(1, now - state.touchStartTime);
+    state.scrollVelocity = (state.scrollY - state.touchStartScroll) / dt;
   });
   wx.onTouchEnd(() => {
+    // 先看是否是按钮点击
     if (state.pressedBtn) {
       if (state.pressedBtn.kind === 'tab' && state.lottery !== state.pressedBtn.val) {
         state.lottery = state.pressedBtn.val;
@@ -530,8 +588,17 @@ function setupTouch() {
       } else if (state.pressedBtn.kind === 'generate' && !state.generating) {
         generate();
       }
+      state.pressedBtn = null;
+      state.scrollVelocity = 0;
+      return;
     }
     state.pressedBtn = null;
+    // 惯性滚动
+    if (Math.abs(state.scrollVelocity) > 1.5) {
+      _startInertia(state.scrollVelocity);
+    } else {
+      state.scrollVelocity = 0;
+    }
   });
 }
 
