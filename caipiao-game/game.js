@@ -807,61 +807,94 @@ function _renderTicketForExport(ec, c) {
 }
 
 function showExportModal() {
-  if (state.currentBets.length === 0) {
-    try { wx.showToast({ title: '请先生成一注', icon: 'none' }); } catch(e) {}
-    return;
-  }
-  // 方案 A：直接复制纯文本到剪贴板（最稳，iOS 上 wx.setClipboardData 不需要权限）
-  const listText = _buildListText();
-  console.log('[EXPORT] list text:', listText);
   try {
-    wx.setClipboardData({
-      data: listText,
-      success: () => {
-        console.log('[EXPORT] clipboard success');
-        try { wx.showToast({ title: '清单已复制，可发给店主', icon: 'success', duration: 3000 }); } catch(e) {}
-      },
-      fail: err => {
-        console.error('[EXPORT] clipboard fail', err);
-        try { wx.showModal({ title: '已生成清单', content: listText, showCancel: false, confirmText: '关闭' }); } catch(e) {}
-      }
-    });
-  } catch (e) {
-    console.error('[EXPORT] clipboard throw', e);
-    try { wx.showModal({ title: '已生成清单', content: listText, showCancel: false, confirmText: '关闭' }); } catch(e) {}
+    if (!state.currentBets || state.currentBets.length === 0) {
+      try { wx.showToast({ title: '请先生成一注', icon: 'none' }); } catch(e) {}
+      return;
+    }
+    let listText = '';
+    try {
+      listText = _buildListText();
+    } catch (e) {
+      console.error('[EXPORT] buildListText error', e);
+      try { wx.showToast({ title: '清单生成失败', icon: 'none' }); } catch(e) {}
+      return;
+    }
+    console.log('[EXPORT] list text:', listText);
+    // 方案 A：直接复制纯文本到剪贴板
+    try {
+      wx.setClipboardData({
+        data: listText,
+        success: () => {
+          console.log('[EXPORT] clipboard success');
+          try { wx.showToast({ title: '清单已复制，可发给店主', icon: 'success', duration: 3000 }); } catch(e) {}
+        },
+        fail: err => {
+          console.error('[EXPORT] clipboard fail', err);
+          try { wx.showModal({ title: '已生成清单', content: listText, showCancel: false, confirmText: '关闭' }); } catch(e) {}
+        }
+      });
+    } catch (e) {
+      console.error('[EXPORT] clipboard throw', e);
+      try { wx.showModal({ title: '已生成清单', content: listText, showCancel: false, confirmText: '关闭' }); } catch(e) {}
+    }
+  } catch (fatal) {
+    console.error('[EXPORT] showExportModal fatal', fatal);
+    try { wx.showToast({ title: '导出异常', icon: 'none' }); } catch(e) {}
   }
-  // 方案 B：尝试保存图片（用 canvas 截图，如果失败不影响主流程）
-  state.showExportModal = true;
-  state.exportState = 'rendering';
-  state.exportMsg = '正在保存图片…';
-  markDirty();
-  setTimeout(() => {
-    try { _doExport(); } catch(e) { console.error('[EXPORT] image save err', e); }
-  }, 100);
 }
 
 function _buildListText() {
-  // 构建纯文本购买清单
+  // 构建纯文本购买清单（带 try-catch 防止某个 bet 字段异常炸掉整个流程）
   const lines = [];
-  const lot = state.lottery === 'ssq' ? '双色球' : '大乐透';
-  const issue = state.historySummary.latestIssue ? `第 ${state.historySummary.latestIssue} 期参考` : '方案';
-  lines.push(`${lot}  ${issue}`);
-  const now = new Date();
-  const timeStr = `生成时间：${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  lines.push(timeStr);
-  lines.push('------------------------------');
-  for (const bet of state.currentBets) {
-    lines.push(`第 ${bet.indexPadded} 注 (${bet.label})`);
-    const primary = state.lottery === 'ssq' ? bet.reds : bet.fronts;
-    const secondary = state.lottery === 'ssq' ? [bet.blue] : bet.backs;
-    const primaryLabel = state.lottery === 'ssq' ? '红球' : '前区';
-    const secondaryLabel = state.lottery === 'ssq' ? '蓝球' : '后区';
-    lines.push(`${primaryLabel}：${primary.map(n => pad(n)).join('  ')}`);
-    lines.push(`${secondaryLabel}：${secondary.map(n => pad(n)).join('  ')}`);
+  try {
+    const lot = state.lottery === 'ssq' ? '双色球' : '大乐透';
+    const issue = state.historySummary.latestIssue ? `第 ${state.historySummary.latestIssue} 期参考` : '方案';
+    lines.push(`${lot}  ${issue}`);
+    const now = new Date();
+    const timeStr = `生成时间：${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    lines.push(timeStr);
+    lines.push('------------------------------');
+    for (let i = 0; i < state.currentBets.length; i++) {
+      const bet = state.currentBets[i];
+      lines.push(`第 ${pad(i + 1)} 注 (${bet.label || ''})`);
+      // 用 try-catch 隔离每注的处理
+      let primaryText = '';
+      let secondaryText = '';
+      try {
+        // 容错：兼容各种字段名
+        let primary, secondary, primaryLabel, secondaryLabel;
+        if (state.lottery === 'ssq') {
+          primary = bet.reds || bet.fronts || [];
+          secondary = bet.blue != null ? [bet.blue] : (bet.backs || []);
+          primaryLabel = '红球';
+          secondaryLabel = '蓝球';
+        } else {
+          primary = bet.fronts || bet.reds || [];
+          secondary = bet.backs || (bet.blue != null ? [bet.blue] : []) || [];
+          primaryLabel = '前区';
+          secondaryLabel = '后区';
+        }
+        // 容错：如果 primary/secondary 不是数组
+        if (!Array.isArray(primary)) primary = [];
+        if (!Array.isArray(secondary)) secondary = [];
+        primaryText = primaryLabel + '：' + primary.map(n => pad(Number(n) || 0)).join('  ');
+        secondaryText = secondaryLabel + '：' + secondary.map(n => pad(Number(n) || 0)).join('  ');
+      } catch (e) {
+        console.error('[buildListText] bet error', i, e);
+        primaryText = '红球：数据错误';
+        secondaryText = '蓝球：数据错误';
+      }
+      lines.push(primaryText);
+      lines.push(secondaryText);
+    }
+    lines.push('------------------------------');
+    lines.push(`合计  ${state.totalBets} 注   共 ${state.totalCost} 元`);
+    lines.push('彩票仅为娱乐参考，请理性购彩');
+  } catch (e) {
+    console.error('[buildListText] fatal', e);
+    lines.push('清单生成出错：' + (e.message || e));
   }
-  lines.push('------------------------------');
-  lines.push(`合计  ${state.totalBets} 注   共 ${state.totalCost} 元`);
-  lines.push('彩票仅为娱乐参考，请理性购彩');
   return lines.join('\n');
 }
 
