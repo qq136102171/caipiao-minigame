@@ -523,6 +523,45 @@ function draw() {
   y = drawHotCold(y) + SECTION_GAP;
   y = drawAgreementBar(y) + 8;
   ctx.restore();
+  // 导出 modal
+  if (state.showExportModal) {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, W, H);
+    const mw = Math.min(W - 40, 320);
+    const mh = 180;
+    const mx = (W - mw) / 2;
+    const my = (H - mh) / 2;
+    fillRound(mx, my, mw, mh, 12, '#fff');
+    let icon = '⏳';
+    let iconColor = '#666';
+    if (state.exportState === 'rendering') { icon = '⏳'; iconColor = '#1976d2'; }
+    else if (state.exportState === 'saving') { icon = '💾'; iconColor = '#1976d2'; }
+    else if (state.exportState === 'done') { icon = '✓'; iconColor = '#4caf50'; }
+    else if (state.exportState === 'failed') { icon = '✕'; iconColor = '#e60012'; }
+    text(icon, W / 2, my + 24, { size: 36, color: iconColor, align: 'center' });
+    let title = '导出图片';
+    if (state.exportState === 'rendering') title = '正在生成…';
+    else if (state.exportState === 'saving') title = '正在保存…';
+    else if (state.exportState === 'done') title = '导出成功';
+    else if (state.exportState === 'failed') title = '导出失败';
+    text(title, W / 2, my + 70, { size: 16, weight: 'bold', color: '#222', align: 'center' });
+    text(state.exportMsg || '', W / 2, my + 96, { size: 12, color: '#666', align: 'center' });
+    if (state.exportState === 'done' || state.exportState === 'failed') {
+      const bw = 120, bh = 36;
+      const bx = (W - bw) / 2;
+      const by = my + mh - bh - 16;
+      fillRound(bx, by, bw, bh, 8, colorByLottery(state.lottery));
+      text('关闭', W / 2, by + (bh - 16) / 2, { size: 14, color: '#fff', weight: 'bold', align: 'center' });
+      layoutY.exportModalCloseX = bx;
+      layoutY.exportModalCloseY = by;
+      layoutY.exportModalCloseW = bw;
+      layoutY.exportModalCloseH = bh;
+    } else {
+      layoutY.exportModalCloseX = undefined;
+    }
+  } else {
+    layoutY.exportModalCloseX = undefined;
+  }
 }
 
 function _hitTestButtons(clientX, clientY) {
@@ -540,6 +579,267 @@ function _hitTestButtons(clientX, clientY) {
     if (inRect(clientX, clientY, PAD + 14, yGen, tw - 28, layoutY.genBtnH)) return { kind: 'generate' };
   }
   return null;
+}
+
+// ===== 导出图片 =====
+let _exportCanvas = null;
+let _exportCtx = null;
+
+function _getExportCanvas() {
+  if (_exportCanvas) return _exportCanvas;
+  if (typeof wx.createOffscreenCanvas === 'function') {
+    _exportCanvas = wx.createOffscreenCanvas({ type: '2d', width: 750, height: 1200 });
+  } else {
+    _exportCanvas = canvas;
+  }
+  _exportCtx = _exportCanvas.getContext('2d');
+  return _exportCanvas;
+}
+
+function _roundedRectPath2(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.lineTo(x + w - r, y); c.arcTo(x + w, y, x + w, y + r, r);
+  c.lineTo(x + w, y + h - r); c.arcTo(x + w, y + h, x + w - r, y + h, r);
+  c.lineTo(x + r, y + h); c.arcTo(x, y + h, x, y + h - r, r);
+  c.lineTo(x, y + r); c.arcTo(x, y, x + r, y, r);
+  c.closePath();
+}
+
+function _drawExportBetRow(c, bet, analysis, y, tx, tw) {
+  const x = tx + 28;
+  const w = tw - 56;
+  const h = 80;
+  c.fillStyle = '#fafafa';
+  _roundedRectPath2(c, x, y, w, h, 8);
+  c.fill();
+  const color = colorByLottery(state.lottery);
+  c.fillStyle = color;
+  _roundedRectPath2(c, x + 12, y + 12, 50, 50, 6);
+  c.fill();
+  c.fillStyle = '#fff';
+  c.font = 'bold 22px sans-serif';
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillText(bet.indexPadded, x + 37, y + 38);
+  c.font = '12px sans-serif';
+  c.fillText(bet.label, x + 37, y + 72);
+  const primary = bet.primary;
+  const secondary = bet.secondary;
+  const ballStartX = x + 84;
+  const ballSize = 36;
+  const ballGap = 6;
+  for (let i = 0; i < primary.length; i++) {
+    _drawExportBall(c, ballStartX + i * (ballSize + ballGap), y + 12, ballSize, primary[i]);
+  }
+  const sepX = ballStartX + primary.length * (ballSize + ballGap) + 4;
+  c.strokeStyle = '#ddd';
+  c.lineWidth = 1;
+  c.beginPath();
+  c.moveTo(sepX, y + 16); c.lineTo(sepX, y + 52); c.stroke();
+  for (let i = 0; i < secondary.length; i++) {
+    _drawExportBall(c, sepX + 6 + i * (ballSize + ballGap), y + 12, ballSize, secondary[i], '#1976d2');
+  }
+  return y + h;
+}
+
+const _exportBallCache = new Map();
+function _getExportBallGrad(color, size) {
+  const k = color + ':' + size;
+  let g = _exportBallCache.get(k);
+  if (g) return g;
+  g = _exportCtx.createRadialGradient(0, 0, 1, 0, 0, size / 2);
+  g.addColorStop(0, 'rgba(255,255,255,0.45)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  _exportBallCache.set(k, g);
+  return g;
+}
+function _drawExportBall(c, x, y, size, ball, fallbackColor) {
+  const col = ball.color || fallbackColor || '#e60012';
+  c.fillStyle = col;
+  c.beginPath();
+  c.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2);
+  c.fill();
+  c.save();
+  c.translate(x + size / 2, y + size / 2);
+  c.fillStyle = _getExportBallGrad(col, size);
+  c.beginPath();
+  c.arc(0, 0, size / 2, 0, Math.PI * 2);
+  c.fill();
+  c.restore();
+  c.fillStyle = '#fff';
+  c.font = 'bold 18px sans-serif';
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillText(ball.padded, x + size / 2, y + size / 2);
+  if (ball.freq) {
+    c.font = '10px sans-serif';
+    c.fillText(String(ball.freq), x + size / 2, y + size - 5);
+  }
+}
+
+function _renderTicketForExport(ec, c) {
+  const W2 = 750, H2 = 1200;
+  const PAD2 = 32;
+  c.fillStyle = '#f5f5f5';
+  c.fillRect(0, 0, W2, H2);
+  const tx = PAD2, ty = 60;
+  const tw = W2 - PAD2 * 2;
+  const titleH = 110;
+  const betCount = state.currentBets.length;
+  const betRowH = 90;
+  const betListH = betCount > 0 ? betCount * betRowH + (betCount - 1) * 10 : 90;
+  const footH = 200;
+  const th = titleH + 30 + betListH + 30 + footH;
+  c.fillStyle = '#fff';
+  _roundedRectPath2(c, tx, ty, tw, th, 16);
+  c.fill();
+  const color = colorByLottery(state.lottery);
+  c.fillStyle = color;
+  _roundedRectPath2(c, tx, ty, tw, titleH, 16);
+  c.fill();
+  c.fillStyle = '#fff';
+  c.fillRect(tx, ty + titleH - 14, tw, 14);
+  c.fillStyle = '#fff';
+  c.font = 'bold 38px sans-serif';
+  c.textAlign = 'left';
+  c.textBaseline = 'top';
+  c.fillText(state.lottery === 'ssq' ? '双色球' : '大乐透', tx + 28, ty + 32);
+  const issueText = state.historySummary.latestIssue ? `第 ${state.historySummary.latestIssue} 期参考` : '方案';
+  c.font = '20px sans-serif';
+  c.textAlign = 'right';
+  c.fillText(issueText, tx + tw - 28, ty + 36);
+  c.fillStyle = 'rgba(255,255,255,0.9)';
+  c.font = '16px sans-serif';
+  c.textAlign = 'left';
+  c.fillText(state.lottery === 'ssq' ? '原始策略（4+2）' : '前区 5 + 后区 2', tx + 28, ty + 78);
+  const now = new Date();
+  const timeStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  c.textAlign = 'right';
+  c.fillText(timeStr, tx + tw - 28, ty + 78);
+  let y = ty + titleH + 20;
+  c.strokeStyle = '#eee';
+  c.beginPath();
+  c.moveTo(tx + 28, y); c.lineTo(tx + tw - 28, y); c.stroke();
+  y += 16;
+  if (betCount === 0) {
+    c.fillStyle = '#999';
+    c.font = '24px sans-serif';
+    c.textAlign = 'center';
+    c.fillText('点击生成一注后再导出', tx + tw / 2, y + 30);
+  } else {
+    for (let i = 0; i < betCount; i++) {
+      const bet = state.currentBets[i];
+      y = _drawExportBetRow(c, bet, state.historyAnalysis.per_bet[i], y, tx, tw);
+      y += 10;
+    }
+  }
+  y += 10;
+  c.strokeStyle = '#eee';
+  c.beginPath();
+  c.moveTo(tx + 28, y); c.lineTo(tx + tw - 28, y); c.stroke();
+  y += 20;
+  c.fillStyle = color;
+  c.font = 'bold 30px sans-serif';
+  c.textAlign = 'left';
+  c.fillText(state.totalBets + ' 注', tx + 28, y);
+  c.fillText(state.totalCost + ' 元', tx + 150, y);
+  const qrSize = 100;
+  const qrX = tx + tw - qrSize - 28;
+  const qrY = y - 6;
+  c.fillStyle = '#fff';
+  c.fillRect(qrX, qrY, qrSize, qrSize);
+  c.fillStyle = '#222';
+  for (let r = 0; r < 14; r++) for (let cc = 0; cc < 14; cc++) {
+    if ((r * 7 + cc + (r * cc * 3)) % 3 === 0) {
+      c.fillRect(qrX + 6 + cc * 6.5, qrY + 6 + r * 6.5, 5, 5);
+    }
+  }
+  const cornerSize = 22;
+  c.fillStyle = '#fff';
+  c.fillRect(qrX, qrY, cornerSize, cornerSize);
+  c.fillRect(qrX + qrSize - cornerSize, qrY, cornerSize, cornerSize);
+  c.fillRect(qrX, qrY + qrSize - cornerSize, cornerSize, cornerSize);
+  c.fillStyle = '#222';
+  c.fillRect(qrX + 4, qrY + 4, cornerSize - 8, cornerSize - 8);
+  c.fillRect(qrX + qrSize - cornerSize + 4, qrY + 4, cornerSize - 8, cornerSize - 8);
+  c.fillRect(qrX + 4, qrY + qrSize - cornerSize + 4, cornerSize - 8, cornerSize - 8);
+  y += 60;
+  c.fillStyle = '#999';
+  c.font = '18px sans-serif';
+  c.textAlign = 'center';
+  c.fillText('彩票仅为娱乐参考 · 请理性购彩', tx + tw / 2, y);
+  y += 30;
+  c.fillText('—— 生成于 彩票投注方案生成器 ——', tx + tw / 2, y);
+}
+
+function showExportModal() {
+  if (state.currentBets.length === 0) {
+    state.exportState = 'failed';
+    state.exportMsg = '请先生成一注再导出';
+    state.showExportModal = true;
+    markDirty();
+    return;
+  }
+  state.showExportModal = true;
+  state.exportState = 'rendering';
+  state.exportMsg = '正在生成图片…';
+  markDirty();
+  setTimeout(() => _doExport(), 50);
+}
+
+function _doExport() {
+  try {
+    _getExportCanvas();
+    if (!_exportCanvas) { state.exportState = 'failed'; state.exportMsg = '创建画布失败'; markDirty(); return; }
+    const dpr = 2;  // 固定 dpr=2 保持高清
+    const W2 = 750, H2 = 1200;
+    _exportCanvas.width = W2 * dpr;
+    _exportCanvas.height = H2 * dpr;
+    _exportCtx.setTransform(1, 0, 0, 1, 0, 0);
+    _exportCtx.scale(dpr, dpr);
+    _renderTicketForExport(_exportCanvas, _exportCtx);
+    state.exportState = 'saving';
+    state.exportMsg = '正在保存到相册…';
+    markDirty();
+    wx.canvasToTempFilePath({
+      canvas: _exportCanvas,
+      fileType: 'png',
+      quality: 1,
+      success: res => {
+        const tempPath = res.tempFilePath;
+        state.exportImgPath = tempPath;
+        wx.saveImageToPhotosAlbum({
+          filePath: tempPath,
+          success: () => {
+            state.exportState = 'done';
+            state.exportMsg = '✓ 已保存到相册';
+            markDirty();
+            setTimeout(() => { state.showExportModal = false; markDirty(); }, 2500);
+          },
+          fail: err => {
+            state.exportState = 'failed';
+            const em = (err && err.errMsg) || '';
+            if (em.indexOf('auth deny') >= 0 || em.indexOf('authorize') >= 0) {
+              state.exportMsg = '需要相册权限';
+            } else {
+              state.exportMsg = '保存失败：' + em;
+            }
+            markDirty();
+          }
+        });
+      },
+      fail: err => {
+        state.exportState = 'failed';
+        state.exportMsg = '导出失败：' + ((err && err.errMsg) || '');
+        markDirty();
+      }
+    });
+  } catch (e) {
+    state.exportState = 'failed';
+    state.exportMsg = '异常：' + ((e && e.message) || e);
+    markDirty();
+  }
 }
 
 let _inertiaRAF = null;
@@ -605,6 +905,16 @@ function setupTouch() {
     state.scrollVelocity = -(state.scrollY - state.touchStartScroll) / dt;
   });
   wx.onTouchEnd(() => {
+    // 导出 modal 打开时：点关闭按钮 / 点其他位置都关闭
+    if (state.showExportModal) {
+      state.showExportModal = false;
+      state.exportState = 'idle';
+      state.exportMsg = '';
+      state.pressedBtn = null;
+      state.scrollVelocity = 0;
+      markDirty();
+      return;
+    }
     // 先看是否是按钮点击
     if (state.pressedBtn) {
       if (state.pressedBtn.kind === 'tab' && state.lottery !== state.pressedBtn.val) {
