@@ -2,7 +2,7 @@
 
 > **项目**: 彩票投注方案生成器（微信小游戏 `caipiao-game`）
 > **最近会话**: 2026-07-31（数据修复）
-> **当前版本**: v1.2.0（已上传微信后台，待提交审核）
+> **当前版本**: v1.2.1（已上传微信后台，待提交审核）
 
 ---
 
@@ -40,6 +40,7 @@
 | 7 | 修复期数落后（SSQ 缺 2026087 期） | ✅ | data/ssq_history.json + caipiao-game/data/ssq_history.js |
 | 8 | 启动联网拉取最新开奖 + 缓存 | ✅ | `caipiao-game/utils/network.js`（新增） |
 | 9 | 盈亏记录（开奖对照 + 奖金追踪） | ✅ | `caipiao-game/utils/library.js` v2 + game.js UI |
+| 10 | 主界面显示「上期开奖结果」 | ✅ | `caipiao-game/game.js` drawLatestDraw |
 
 ---
 

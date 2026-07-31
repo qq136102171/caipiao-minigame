@@ -42,6 +42,10 @@ const state = {
   showLibraryModal: false,
   blueStats: null,
   libraryView: 'list',    // 'list' | 'detail'
+
+  // ===== 最新开奖（启动联网拉） =====
+  latestDraw: { ssq: null, dlt: null },
+  latestDrawLoading: false,
   libraryList: [],
   librarySelectedId: null,
   libraryScrollY: 0,
@@ -250,7 +254,11 @@ function drawTicketCard() {
   drawLotteryButton('ssq', '双色球', tx + 14, y, btnW, btnH);
   drawLotteryButton('dlt', '大乐透', tx + 14 + btnW + 10, y, btnW, btnH);
   layoutY.tabY = y;
-  y += btnH + 12;
+  y += btnH + 8;
+
+  // 上期开奖（联网拉）
+  const drawH = drawLatestDraw(tx + 14, y, tw - 28);
+  y += drawH + 6;
 
   if (state.lottery === 'ssq') {
     text('投注策略', tx + 14, y, { size: 12, color: '#666' });
@@ -362,6 +370,70 @@ function drawSaveToLibraryButton(x, y, w, h) {
   roundedRectPath(x + 0.75, y + 0.75, w - 1.5, h - 1.5, 7.25);
   ctx.stroke();
   text('💾  保存到彩票库', x + w / 2, y + (h - 14) / 2, { size: 13, weight: 'bold', color: txt, align: 'center' });
+}
+
+function drawLatestDraw(x, y, w) {
+  // 上期开奖展示条：显示最近一期的开奖号码
+  const draw = state.latestDraw[state.lottery];
+  const h = 60;
+  fillRound(x, y, w, h, 8, '#fff8e1');
+  if (state.latestDrawLoading && !draw) {
+    text('⏳  正在拉取最新开奖...', x + w / 2, y + (h - 12) / 2,
+      { size: 11, color: '#ff8a00', align: 'center' });
+    return h;
+  }
+  if (!draw) {
+    text('📋  暂无最新开奖（启动时会自动拉取）', x + w / 2, y + (h - 12) / 2,
+      { size: 11, color: '#999', align: 'center' });
+    text('也可在「📚 我的彩票库」里手动刷新', x + w / 2, y + (h - 12) / 2 + 18,
+      { size: 9, color: '#bbb', align: 'center' });
+    return h;
+  }
+  // 标题
+  const lotName = state.lottery === 'ssq' ? '双色球' : '大乐透';
+  text(`📋  上期开奖 ${draw.issue} 期`, x + 8, y + 8,
+    { size: 11, weight: 'bold', color: '#666' });
+  text(draw.date || '', x + w - 8, y + 9,
+    { size: 9, color: '#999', align: 'right' });
+  // 号码
+  const ballY = y + 24;
+  const ballSize = 18;
+  const ballGap = 4;
+  const primary = draw.primary || [];
+  const primaryColor = state.lottery === 'ssq' ? '#e60012' : '#ff6f00';
+  for (let i = 0; i < primary.length; i++) {
+    const n = primary[i];
+    ctx.fillStyle = primaryColor;
+    ctx.beginPath();
+    ctx.arc(x + 12 + i * (ballSize + ballGap) + ballSize / 2, ballY + ballSize / 2,
+      ballSize / 2, 0, Math.PI * 2);
+    ctx.fill();
+    text(pad(n), x + 12 + i * (ballSize + ballGap) + ballSize / 2,
+      ballY + ballSize / 2 - 6, { size: 10, weight: 'bold', color: '#fff', align: 'center' });
+  }
+  // 分隔线
+  const sepX = x + 12 + primary.length * (ballSize + ballGap) + 4;
+  ctx.strokeStyle = '#ddd';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(sepX, ballY + 2); ctx.lineTo(sepX, ballY + ballSize - 2); ctx.stroke();
+  // 次区
+  const secondary = Array.isArray(draw.secondary) ? draw.secondary : [draw.secondary];
+  const secondaryColor = state.lottery === 'ssq' ? '#1976d2' : '#00acc1';
+  const secondaryLabel = state.lottery === 'ssq' ? '蓝' : '后';
+  text(secondaryLabel, x + sepX + 4, ballY + ballSize / 2 - 6,
+    { size: 10, color: secondaryColor, weight: 'bold' });
+  for (let i = 0; i < secondary.length; i++) {
+    const n = secondary[i];
+    ctx.fillStyle = secondaryColor;
+    ctx.beginPath();
+    ctx.arc(x + sepX + 4 + 14 + i * (ballSize + ballGap) + ballSize / 2,
+      ballY + ballSize / 2, ballSize / 2, 0, Math.PI * 2);
+    ctx.fill();
+    text(pad(n), x + sepX + 4 + 14 + i * (ballSize + ballGap) + ballSize / 2,
+      ballY + ballSize / 2 - 6, { size: 10, weight: 'bold', color: '#fff', align: 'center' });
+  }
+  return h;
 }
 
 function drawLibraryButton(x, y, w, h) {
@@ -581,7 +653,8 @@ function computeLayout() {
   layoutY = { startY: y, ticketH: 0 };
   y += HEADER_H + 14;
   y += 20;           // 选择彩种 文本
-  y += 32 + 12;      // 彩种按钮 + 间距
+  y += 32 + 8;       // 彩种按钮 + 间距
+  y += 60 + 6;       // 上期开奖 + 间距
   if (state.lottery === 'ssq') y += 20;
   y += 40 + 10;      // 生成按钮 + 间距
   y += 40 + 10;      // 导出+保存 行 + 间距
@@ -1528,10 +1601,13 @@ loop();
 
 // 启动后异步拉取最新开奖 + 对照库（不阻塞渲染）
 function _bootstrapFetch() {
+  state.latestDrawLoading = true;
   // 拉 SSQ
   network.fetchLatest('ssq').then(draw => {
     if (draw) {
       console.log('[BOOT] latest SSQ:', draw.issue);
+      state.latestDraw.ssq = draw;
+      markDirty();
       const r = library.checkAll({ ssq: draw });
       if (r.updated > 0) {
         showToast(`✓ 已对照 ${r.updated} 张票（最新 ${draw.issue}）`, 2000);
@@ -1545,6 +1621,8 @@ function _bootstrapFetch() {
   network.fetchLatest('dlt').then(draw => {
     if (draw && draw.issue) {
       console.log('[BOOT] latest DLT:', draw.issue);
+      state.latestDraw.dlt = draw;
+      markDirty();
       const r = library.checkAll({ dlt: draw });
       if (r.updated > 0) {
         state.libraryStats = library.stats();
@@ -1552,7 +1630,11 @@ function _bootstrapFetch() {
         markDirty();
       }
     }
-  }).catch(e => console.error('[BOOT] dlt fetch error', e));
+  }).catch(e => console.error('[BOOT] dlt fetch error', e))
+    .finally(() => {
+      state.latestDrawLoading = false;
+      markDirty();
+    });
 }
 setTimeout(_bootstrapFetch, 1500);  // 等首屏画完再触发
 
