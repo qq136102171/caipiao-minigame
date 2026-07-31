@@ -9,6 +9,8 @@
 const { generateSSQ } = require('./utils/generator.js');
 const { generateDLT } = require('./utils/dlt.js');
 const { analyzeBet, getSummary, getTopBottom } = require('./utils/history.js');
+const library = require('./utils/library.js');
+const network = require('./utils/network.js');
 
 // ===== 状态 =====
 const state = {
@@ -32,6 +34,21 @@ const state = {
   scrollVelocity: 0,   // px/ms，手指抬起后用此值做惯性
   scrollMin: 0,       // 动态边界
   scrollMax: 0,
+  touchLastX: 0,
+
+  // ===== 我的彩票库 =====
+  libraryCount: 0,
+  libraryStats: null,       // {totalCost, totalPrize, netPnL, wonCount, ...}
+  showLibraryModal: false,
+  blueStats: null,
+  libraryView: 'list',    // 'list' | 'detail'
+  libraryList: [],
+  librarySelectedId: null,
+  libraryScrollY: 0,
+  libraryDeleteTargetId: null,
+  refreshing: false,
+  toastText: '',
+  toastUntil: 0,
 };
 
 // ===== 工具 =====
@@ -109,6 +126,7 @@ function generate() {
     state.currentBets = perBet.map(p => p.bet);
     state.structures = result.structures.map(([name, nums]) => ({ name, numsStr: nums.map(pad).join(' ') }));
     state.overlapChecks = result.overlapChecks;
+    state.blueStats = result.blueStats || null;
     state.totalBets = result.totalBets;
     state.totalCost = result.totalCost;
     state.historyAnalysis = { per_bet: perBet.map(p => p.analysis) };
@@ -244,13 +262,27 @@ function drawTicketCard() {
   layoutY.genBtnY = y;
   layoutY.genBtnH = 44;
   y += 44 + 16;  // 加 16px 间距，避免误触
-  // 导出按钮（独立行，醒目）
-  drawExportButton(tx + 14, y, tw - 28, 44);
+  // 导出按钮 + 保存到彩票库（同行，左右各占一半）
+  const halfW = (tw - 28 - 10) / 2;
+  drawExportButton(tx + 14, y, halfW, 40);
   layoutY.exportBtnX = tx + 14;
   layoutY.exportBtnY = y;
-  layoutY.exportBtnW = tw - 28;
-  layoutY.exportBtnH = 44;
-  y += 44 + 14;
+  layoutY.exportBtnW = halfW;
+  layoutY.exportBtnH = 40;
+  drawSaveToLibraryButton(tx + 14 + halfW + 10, y, halfW, 40);
+  layoutY.saveBtnX = tx + 14 + halfW + 10;
+  layoutY.saveBtnY = y;
+  layoutY.saveBtnW = halfW;
+  layoutY.saveBtnH = 40;
+  y += 40 + 10;
+
+  // 我的彩票库（独立行，带数字徽标）
+  drawLibraryButton(tx + 14, y, tw - 28, 40);
+  layoutY.libBtnX = tx + 14;
+  layoutY.libBtnY = y;
+  layoutY.libBtnW = tw - 28;
+  layoutY.libBtnH = 40;
+  y += 40 + 14;
 
   // 投注列表标题
   text('本期投注', tx + 14, y, { size: 12, color: '#666' });
@@ -316,7 +348,39 @@ function drawExportButton(x, y, w, h) {
   roundedRectPath(x + 0.75, y + 0.75, w - 1.5, h - 1.5, 7.25);
   ctx.stroke();
   // 居中：icon + 文字
-  text('📷  导出彩票图片到相册', x + w / 2, y + (h - 14) / 2, { size: 14, weight: 'bold', color: colorByLottery(state.lottery), align: 'center' });
+  text('📋  导出数据到粘贴板', x + w / 2, y + (h - 14) / 2, { size: 14, weight: 'bold', color: colorByLottery(state.lottery), align: 'center' });
+}
+
+function drawSaveToLibraryButton(x, y, w, h) {
+  const pressed = state.pressedBtn && state.pressedBtn.kind === 'save';
+  const enabled = state.currentBets.length > 0;
+  const stroke = pressed ? '#ff6f00' : (enabled ? '#ff6f00' : '#ccc');
+  const txt = enabled ? colorByLottery(state.lottery) : '#999';
+  fillRound(x, y, w, h, 8, pressed ? '#fff3e0' : '#fff');
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 1.5;
+  roundedRectPath(x + 0.75, y + 0.75, w - 1.5, h - 1.5, 7.25);
+  ctx.stroke();
+  text('💾  保存到彩票库', x + w / 2, y + (h - 14) / 2, { size: 13, weight: 'bold', color: txt, align: 'center' });
+}
+
+function drawLibraryButton(x, y, w, h) {
+  const pressed = state.pressedBtn && state.pressedBtn.kind === 'library';
+  fillRound(x, y, w, h, 8, pressed ? '#1976d2' : '#fff');
+  ctx.strokeStyle = pressed ? '#1976d2' : '#1976d2';
+  ctx.lineWidth = 1.5;
+  roundedRectPath(x + 0.75, y + 0.75, w - 1.5, h - 1.5, 7.25);
+  ctx.stroke();
+  text('📚  我的彩票库', x + w / 2 - 8, y + (h - 14) / 2, { size: 13, weight: 'bold', color: '#1976d2', align: 'center' });
+  // 右侧数字徽标
+  if (state.libraryCount > 0) {
+    const badgeText = state.libraryCount > 99 ? '99+' : String(state.libraryCount);
+    const badgeW = Math.max(22, badgeText.length * 12 + 10);
+    const badgeX = x + w - badgeW - 12;
+    const badgeY = y + (h - 18) / 2;
+    fillRound(badgeX, badgeY, badgeW, 18, 9, '#e60012');
+    text(badgeText, badgeX + badgeW / 2, badgeY + 3, { size: 11, weight: 'bold', color: '#fff', align: 'center' });
+  }
 }
 
 function drawBetRow(bet, analysis, y, tx, tw) {
@@ -403,17 +467,42 @@ function drawStructures(y) {
 
 function drawOverlap(y) {
   if (state.lottery !== 'ssq') return y;
-  const h = 20 + state.overlapChecks.length * 16 + 10;
+  const rows = state.overlapChecks;
+  if (!rows || rows.length === 0) return y;
+  const h = 20 + rows.length * 16 + 10;
   fillRound(PAD, y, W - PAD * 2, h, 8, '#fff');
-  text('重叠检查', PAD + 12, y + 8, { size: 12, weight: 'bold', color: '#222' });
+  text('🔄 去重检查', PAD + 12, y + 8, { size: 12, weight: 'bold', color: '#222' });
   let ty = y + 28;
-  for (const c of state.overlapChecks) {
-    const ok = c.count <= c.limit;
-    text(`${c.name}（限≤${c.limit}）`, PAD + 12, ty, { size: 10, color: '#666' });
-    text(`${c.count} 个`, PAD + W - PAD * 2 - 12, ty, { size: 10, weight: 'bold', color: ok ? '#4caf50' : '#e60012', align: 'right' });
+  for (const c of rows) {
+    // 不同指标的不同比较语义：
+    //   - 区间重叠（A∩B 等）：count <= limit
+    //   - 全局去重（独立号码数）：count >= limit
+    //   - 重复号码（单号出现组数 >2）：count <= limit（理想 0）
+    let ok, hint, valText;
+    if (c.name === '全局去重') {
+      ok = c.count >= c.limit;
+      hint = `≥${c.limit}`;
+      valText = `${c.count} 个不同`;
+    } else if (c.name === '重复号码') {
+      ok = c.count <= c.limit;
+      hint = `≤${c.limit}`;
+      valText = `${c.count} 个`;
+    } else {
+      ok = c.count <= c.limit;
+      hint = `≤${c.limit}`;
+      valText = `${c.count} 个`;
+    }
+    text(`${c.name}（${hint}）`, PAD + 12, ty, { size: 10, color: '#666' });
+    text(valText, PAD + W - PAD * 2 - 12, ty, { size: 10, weight: 'bold', color: ok ? '#4caf50' : '#e60012', align: 'right' });
     ty += 16;
   }
-  return y + h;
+  // 蓝球统计
+  const bs = state.blueStats;
+  if (bs) {
+    text(`蓝球: 奇${bs.oddCount} 偶${bs.evenCount}  小${bs.smallCount} 大${bs.largeCount}`,
+      PAD + 12, ty, { size: 10, color: '#666' });
+  }
+  return y + h + (bs ? 4 : 0);
 }
 
 function drawHistoryPanel(y) {
@@ -494,7 +583,9 @@ function computeLayout() {
   y += 20;           // 选择彩种 文本
   y += 32 + 12;      // 彩种按钮 + 间距
   if (state.lottery === 'ssq') y += 20;
-  y += 40 + 14;      // 生成按钮 + 间距
+  y += 40 + 10;      // 生成按钮 + 间距
+  y += 40 + 10;      // 导出+保存 行 + 间距
+  y += 40 + 14;      // 我的彩票库 + 间距
   y += 20;           // 本期投注
   const betCount = state.currentBets.length || 1;
   y += (state.currentBets.length === 0 ? 40 : (state.currentBets.length * 86 + (state.currentBets.length - 1) * 8));
@@ -551,44 +642,13 @@ function draw() {
   y = drawAgreementBar(y) + 8;
   ctx.restore();
   // 导出 modal
-  if (state.showExportModal) {
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(0, 0, W, H);
-    const mw = Math.min(W - 40, 320);
-    const mh = 180;
-    const mx = (W - mw) / 2;
-    const my = (H - mh) / 2;
-    fillRound(mx, my, mw, mh, 12, '#fff');
-    let icon = '⏳';
-    let iconColor = '#666';
-    if (state.exportState === 'rendering') { icon = '⏳'; iconColor = '#1976d2'; }
-    else if (state.exportState === 'saving') { icon = '💾'; iconColor = '#1976d2'; }
-    else if (state.exportState === 'done') { icon = '✓'; iconColor = '#4caf50'; }
-    else if (state.exportState === 'failed') { icon = '✕'; iconColor = '#e60012'; }
-    text(icon, W / 2, my + 24, { size: 36, color: iconColor, align: 'center' });
-    let title = '导出图片';
-    if (state.exportState === 'rendering') title = '正在生成…';
-    else if (state.exportState === 'saving') title = '正在保存…';
-    else if (state.exportState === 'done') title = '导出成功';
-    else if (state.exportState === 'failed') title = '导出失败';
-    text(title, W / 2, my + 70, { size: 16, weight: 'bold', color: '#222', align: 'center' });
-    text(state.exportMsg || '', W / 2, my + 96, { size: 12, color: '#666', align: 'center' });
-    if (state.exportState === 'done' || state.exportState === 'failed') {
-      const bw = 120, bh = 36;
-      const bx = (W - bw) / 2;
-      const by = my + mh - bh - 16;
-      fillRound(bx, by, bw, bh, 8, colorByLottery(state.lottery));
-      text('关闭', W / 2, by + (bh - 16) / 2, { size: 14, color: '#fff', weight: 'bold', align: 'center' });
-      layoutY.exportModalCloseX = bx;
-      layoutY.exportModalCloseY = by;
-      layoutY.exportModalCloseW = bw;
-      layoutY.exportModalCloseH = bh;
-    } else {
-      layoutY.exportModalCloseX = undefined;
-    }
-  } else {
-    layoutY.exportModalCloseX = undefined;
+  // 彩票库 modal
+  if (state.showLibraryModal) {
+    drawLibraryModal();
   }
+
+  // Toast
+  drawToast();
 }
 
 function _hitTestButtons(clientX, clientY) {
@@ -611,239 +671,18 @@ function _hitTestButtons(clientX, clientY) {
     const yExp = layoutY.exportBtnY + sy;
     if (inRect(clientX, clientY, layoutY.exportBtnX, yExp, layoutY.exportBtnW, layoutY.exportBtnH)) return { kind: 'export' };
   }
+  if (layoutY.saveBtnX !== undefined) {
+    const ySv = layoutY.saveBtnY + sy;
+    if (inRect(clientX, clientY, layoutY.saveBtnX, ySv, layoutY.saveBtnW, layoutY.saveBtnH)) return { kind: 'save' };
+  }
+  if (layoutY.libBtnX !== undefined) {
+    const yLb = layoutY.libBtnY + sy;
+    if (inRect(clientX, clientY, layoutY.libBtnX, yLb, layoutY.libBtnW, layoutY.libBtnH)) return { kind: 'library' };
+  }
   return null;
 }
 
-// ===== 导出图片 =====
-let _exportCanvas = null;
-let _exportCtx = null;
-
-function _getExportCanvas() {
-  if (_exportCanvas) return _exportCanvas;
-  if (typeof wx.createOffscreenCanvas === 'function') {
-    _exportCanvas = wx.createOffscreenCanvas({ type: '2d', width: 750, height: 1200 });
-  } else {
-    _exportCanvas = canvas;
-  }
-  _exportCtx = _exportCanvas.getContext('2d');
-  return _exportCanvas;
-}
-
-function _roundedRectPath2(c, x, y, w, h, r) {
-  c.beginPath();
-  c.moveTo(x + r, y);
-  c.lineTo(x + w - r, y); c.arcTo(x + w, y, x + w, y + r, r);
-  c.lineTo(x + w, y + h - r); c.arcTo(x + w, y + h, x + w - r, y + h, r);
-  c.lineTo(x + r, y + h); c.arcTo(x, y + h, x, y + h - r, r);
-  c.lineTo(x, y + r); c.arcTo(x, y, x + r, y, r);
-  c.closePath();
-}
-
-function _drawExportBetRow(c, bet, analysis, y, tx, tw) {
-  const x = tx + 28;
-  const w = tw - 56;
-  const h = 80;
-  c.fillStyle = '#fafafa';
-  _roundedRectPath2(c, x, y, w, h, 8);
-  c.fill();
-  const color = colorByLottery(state.lottery);
-  c.fillStyle = color;
-  _roundedRectPath2(c, x + 12, y + 12, 50, 50, 6);
-  c.fill();
-  c.fillStyle = '#fff';
-  c.font = 'bold 22px sans-serif';
-  c.textAlign = 'center';
-  c.textBaseline = 'middle';
-  c.fillText(bet.indexPadded, x + 37, y + 38);
-  c.font = '12px sans-serif';
-  c.fillText(bet.label, x + 37, y + 72);
-  const primary = bet.primary;
-  const secondary = bet.secondary;
-  const ballStartX = x + 84;
-  const ballSize = 36;
-  const ballGap = 6;
-  for (let i = 0; i < primary.length; i++) {
-    _drawExportBall(c, ballStartX + i * (ballSize + ballGap), y + 12, ballSize, primary[i]);
-  }
-  const sepX = ballStartX + primary.length * (ballSize + ballGap) + 4;
-  c.strokeStyle = '#ddd';
-  c.lineWidth = 1;
-  c.beginPath();
-  c.moveTo(sepX, y + 16); c.lineTo(sepX, y + 52); c.stroke();
-  for (let i = 0; i < secondary.length; i++) {
-    _drawExportBall(c, sepX + 6 + i * (ballSize + ballGap), y + 12, ballSize, secondary[i], '#1976d2');
-  }
-  return y + h;
-}
-
-const _exportBallCache = new Map();
-function _getExportBallGrad(color, size) {
-  const k = color + ':' + size;
-  let g = _exportBallCache.get(k);
-  if (g) return g;
-  g = _exportCtx.createRadialGradient(0, 0, 1, 0, 0, size / 2);
-  g.addColorStop(0, 'rgba(255,255,255,0.45)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  _exportBallCache.set(k, g);
-  return g;
-}
-function _drawExportBall(c, x, y, size, ball, fallbackColor) {
-  const col = ball.color || fallbackColor || '#e60012';
-  c.fillStyle = col;
-  c.beginPath();
-  c.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2);
-  c.fill();
-  c.save();
-  c.translate(x + size / 2, y + size / 2);
-  c.fillStyle = _getExportBallGrad(col, size);
-  c.beginPath();
-  c.arc(0, 0, size / 2, 0, Math.PI * 2);
-  c.fill();
-  c.restore();
-  c.fillStyle = '#fff';
-  c.font = 'bold 18px sans-serif';
-  c.textAlign = 'center';
-  c.textBaseline = 'middle';
-  c.fillText(ball.padded, x + size / 2, y + size / 2);
-  if (ball.freq) {
-    c.font = '10px sans-serif';
-    c.fillText(String(ball.freq), x + size / 2, y + size - 5);
-  }
-}
-
-function _renderTicketForExport(ec, c) {
-  const W2 = 750, H2 = 1200;
-  const PAD2 = 32;
-  c.fillStyle = '#f5f5f5';
-  c.fillRect(0, 0, W2, H2);
-  const tx = PAD2, ty = 60;
-  const tw = W2 - PAD2 * 2;
-  const titleH = 110;
-  const betCount = state.currentBets.length;
-  const betRowH = 90;
-  const betListH = betCount > 0 ? betCount * betRowH + (betCount - 1) * 10 : 90;
-  const footH = 200;
-  const th = titleH + 30 + betListH + 30 + footH;
-  c.fillStyle = '#fff';
-  _roundedRectPath2(c, tx, ty, tw, th, 16);
-  c.fill();
-  const color = colorByLottery(state.lottery);
-  c.fillStyle = color;
-  _roundedRectPath2(c, tx, ty, tw, titleH, 16);
-  c.fill();
-  c.fillStyle = '#fff';
-  c.fillRect(tx, ty + titleH - 14, tw, 14);
-  c.fillStyle = '#fff';
-  c.font = 'bold 38px sans-serif';
-  c.textAlign = 'left';
-  c.textBaseline = 'top';
-  c.fillText(state.lottery === 'ssq' ? '双色球' : '大乐透', tx + 28, ty + 32);
-  const issueText = state.historySummary.latestIssue ? `第 ${state.historySummary.latestIssue} 期参考` : '方案';
-  c.font = '20px sans-serif';
-  c.textAlign = 'right';
-  c.fillText(issueText, tx + tw - 28, ty + 36);
-  c.fillStyle = 'rgba(255,255,255,0.9)';
-  c.font = '16px sans-serif';
-  c.textAlign = 'left';
-  c.fillText(state.lottery === 'ssq' ? '原始策略（4+2）' : '前区 5 + 后区 2', tx + 28, ty + 78);
-  const now = new Date();
-  const timeStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  c.textAlign = 'right';
-  c.fillText(timeStr, tx + tw - 28, ty + 78);
-  let y = ty + titleH + 20;
-  c.strokeStyle = '#eee';
-  c.beginPath();
-  c.moveTo(tx + 28, y); c.lineTo(tx + tw - 28, y); c.stroke();
-  y += 16;
-  if (betCount === 0) {
-    c.fillStyle = '#999';
-    c.font = '24px sans-serif';
-    c.textAlign = 'center';
-    c.fillText('点击生成一注后再导出', tx + tw / 2, y + 30);
-  } else {
-    for (let i = 0; i < betCount; i++) {
-      const bet = state.currentBets[i];
-      y = _drawExportBetRow(c, bet, state.historyAnalysis.per_bet[i], y, tx, tw);
-      y += 10;
-    }
-  }
-  y += 10;
-  c.strokeStyle = '#eee';
-  c.beginPath();
-  c.moveTo(tx + 28, y); c.lineTo(tx + tw - 28, y); c.stroke();
-  y += 20;
-  c.fillStyle = color;
-  c.font = 'bold 30px sans-serif';
-  c.textAlign = 'left';
-  c.fillText(state.totalBets + ' 注', tx + 28, y);
-  c.fillText(state.totalCost + ' 元', tx + 150, y);
-  const qrSize = 100;
-  const qrX = tx + tw - qrSize - 28;
-  const qrY = y - 6;
-  c.fillStyle = '#fff';
-  c.fillRect(qrX, qrY, qrSize, qrSize);
-  c.fillStyle = '#222';
-  for (let r = 0; r < 14; r++) for (let cc = 0; cc < 14; cc++) {
-    if ((r * 7 + cc + (r * cc * 3)) % 3 === 0) {
-      c.fillRect(qrX + 6 + cc * 6.5, qrY + 6 + r * 6.5, 5, 5);
-    }
-  }
-  const cornerSize = 22;
-  c.fillStyle = '#fff';
-  c.fillRect(qrX, qrY, cornerSize, cornerSize);
-  c.fillRect(qrX + qrSize - cornerSize, qrY, cornerSize, cornerSize);
-  c.fillRect(qrX, qrY + qrSize - cornerSize, cornerSize, cornerSize);
-  c.fillStyle = '#222';
-  c.fillRect(qrX + 4, qrY + 4, cornerSize - 8, cornerSize - 8);
-  c.fillRect(qrX + qrSize - cornerSize + 4, qrY + 4, cornerSize - 8, cornerSize - 8);
-  c.fillRect(qrX + 4, qrY + qrSize - cornerSize + 4, cornerSize - 8, cornerSize - 8);
-  y += 60;
-  c.fillStyle = '#999';
-  c.font = '18px sans-serif';
-  c.textAlign = 'center';
-  c.fillText('彩票仅为娱乐参考 · 请理性购彩', tx + tw / 2, y);
-  y += 30;
-  c.fillText('—— 生成于 彩票投注方案生成器 ——', tx + tw / 2, y);
-}
-
-function showExportModal() {
-  try {
-    if (!state.currentBets || state.currentBets.length === 0) {
-      try { wx.showToast({ title: '请先生成一注', icon: 'none' }); } catch(e) {}
-      return;
-    }
-    let listText = '';
-    try {
-      listText = _buildListText();
-    } catch (e) {
-      console.error('[EXPORT] buildListText error', e);
-      try { wx.showToast({ title: '清单生成失败', icon: 'none' }); } catch(e) {}
-      return;
-    }
-    console.log('[EXPORT] list text:', listText);
-    // 方案 A：直接复制纯文本到剪贴板
-    try {
-      wx.setClipboardData({
-        data: listText,
-        success: () => {
-          console.log('[EXPORT] clipboard success');
-          try { wx.showToast({ title: '清单已复制，可发给店主', icon: 'success', duration: 3000 }); } catch(e) {}
-        },
-        fail: err => {
-          console.error('[EXPORT] clipboard fail', err);
-          try { wx.showModal({ title: '已生成清单', content: listText, showCancel: false, confirmText: '关闭' }); } catch(e) {}
-        }
-      });
-    } catch (e) {
-      console.error('[EXPORT] clipboard throw', e);
-      try { wx.showModal({ title: '已生成清单', content: listText, showCancel: false, confirmText: '关闭' }); } catch(e) {}
-    }
-  } catch (fatal) {
-    console.error('[EXPORT] showExportModal fatal', fatal);
-    try { wx.showToast({ title: '导出异常', icon: 'none' }); } catch(e) {}
-  }
-}
-
+// ===== 导出到粘贴板 =====
 function _buildListText() {
   // 构建纯文本购买清单（带 try-catch 防止某个 bet 字段异常炸掉整个流程）
   const lines = [];
@@ -857,18 +696,14 @@ function _buildListText() {
     lines.push('------------------------------');
     for (let i = 0; i < state.currentBets.length; i++) {
       const bet = state.currentBets[i];
-      // bet 实际结构是 { index, indexPadded, label, primary: [{number, padded, ...}, ...], secondary: [...] }
-      // primary/secondary 里的对象是 ballForRender 的结果，数字在 .number 字段
       const primaryLabel = state.lottery === 'ssq' ? '红球' : '前区';
       const secondaryLabel = state.lottery === 'ssq' ? '蓝球' : '后区';
       let primaryNums = [];
       let secondaryNums = [];
       try {
-        // 主区：取 primary 数组的 number
         if (Array.isArray(bet.primary)) {
           primaryNums = bet.primary.map(b => (b && b.number != null) ? b.number : NaN).filter(n => !isNaN(n));
         }
-        // 副区：取 secondary 数组的 number
         if (Array.isArray(bet.secondary)) {
           secondaryNums = bet.secondary.map(b => (b && b.number != null) ? b.number : NaN).filter(n => !isNaN(n));
         }
@@ -890,365 +725,616 @@ function _buildListText() {
   return lines.join('\n');
 }
 
-function _restoreCanvas(oldW, oldH, oldScale) {
-  // 恢复主 canvas 尺寸
-  try { canvas.width = oldW; canvas.height = oldH; } catch(e) {}
-  if (oldScale) {
-    try { ctx.setTransform(oldScale.a, oldScale.b, oldScale.c, oldScale.d, oldScale.e, oldScale.f); } catch(e) { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
-  } else {
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
-}
-
-function _doExport() {
-  // 关键：先关闭 modal（避免半透明层被截进图）
-  state.showExportModal = false;
-  state.exportState = 'saving';
-  state.exportMsg = '正在保存…';
-  markDirty();
-  console.log('[EXPORT] start, currentBets=', state.currentBets.length, 'dpr=', dpr, 'W=', W, 'H=', H);
-
-  // 保存主 canvas 当前状态
-  const oldW = canvas.width, oldH = canvas.height;
-  let oldScale = null;
-  try { oldScale = ctx.getTransform(); } catch(e) {}
-
-  // 设主 canvas 物理尺寸为 750x1200
-  const targetW = 750, targetH = 1200;
-  let resized = false;
-  try {
-    canvas.width = targetW;
-    canvas.height = targetH;
-    resized = true;
-    console.log('[EXPORT] canvas resized to', canvas.width, 'x', canvas.height);
-  } catch (e) {
-    console.error('[EXPORT] resize failed', e);
-  }
-
-  // 完整重置 transform：scale(dpr) + translate + dpr 归零
-  // 之前用 ctx.setTransform(1,0,0,1,0,0) 可能没彻底清掉
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.scale(1, 1);
-  ctx.translate(0, 0);
-
-  // 画导出图（用清理过的 ctx）
-  try {
-    _renderTicketForExportRaw(targetW, targetH);
-    console.log('[EXPORT] draw done');
-  } catch (e) {
-    console.error('[EXPORT] draw failed', e);
-    state.exportState = 'failed';
-    state.exportMsg = '画图失败：' + (e.message || e);
-    markDirty();
-    _restoreCanvas(oldW, oldH, oldScale);
+function copyToClipboard() {
+  if (!state.currentBets || state.currentBets.length === 0) {
+    showToast('请先生成一注');
     return;
   }
-
-  state.exportMsg = '正在保存到相册…';
-  markDirty();
-
-  // 10 秒超时保护
-  let responded = false;
-  const timeoutId = setTimeout(() => {
-    if (responded) return;
-    responded = true;
-    console.error('[EXPORT] TIMEOUT: canvasToTempFilePath no callback after 10s');
-    state.exportState = 'failed';
-    state.exportMsg = '截图超时';
-    markDirty();
-    try { wx.showToast({ title: '截图超时', icon: 'none' }); } catch(e) {}
-    _restoreCanvas(oldW, oldH, oldScale);
-  }, 10000);
-
-  // 截图
+  let listText = '';
   try {
-    console.log('[EXPORT] calling canvas.toTempFilePath...');
-    if (typeof canvas.toTempFilePath !== 'function') {
-      throw new Error('canvas.toTempFilePath 不可用');
-    }
-    canvas.toTempFilePath({
-      fileType: 'png',
-      quality: 1,
-      success: res => {
-        if (responded) return;
-        responded = true;
-        clearTimeout(timeoutId);
-        console.log('[EXPORT] canvasToTempFilePath success', res);
-        const tempPath = res.tempFilePath;
-        state.exportImgPath = tempPath;
-        _restoreCanvas(oldW, oldH, oldScale);
-        markDirty();
-        _saveToAlbum(tempPath);
-      },
-      fail: err => {
-        if (responded) return;
-        responded = true;
-        clearTimeout(timeoutId);
-        console.error('[EXPORT] canvasToTempFilePath fail', err);
-        const em = (err && err.errMsg) || JSON.stringify(err);
-        state.exportState = 'failed';
-        state.exportMsg = '截图失败：' + em;
-        markDirty();
-        try { wx.showToast({ title: '截图失败', icon: 'none' }); } catch(e) {}
-        _restoreCanvas(oldW, oldH, oldScale);
-      }
-    });
+    listText = _buildListText();
   } catch (e) {
-    if (!responded) {
-      responded = true;
-      clearTimeout(timeoutId);
-    }
-    console.error('[EXPORT] canvas.toTempFilePath throw', e);
-    let em = (e && e.message) || e;
-    if (typeof em === 'object') em = JSON.stringify(em);
-    state.exportState = 'failed';
-    state.exportMsg = '调用失败：' + em;
-    markDirty();
-    try { wx.showToast({ title: '调用失败', icon: 'none' }); } catch(e) {}
-    _restoreCanvas(oldW, oldH, oldScale);
+    console.error('[CLIPBOARD] buildListText error', e);
+    showToast('清单生成失败');
+    return;
   }
-}
-
-function _saveToAlbum(tempPath) {
-  let responded = false;
-  const timeoutId = setTimeout(() => {
-    if (responded) return;
-    responded = true;
-    console.error('[EXPORT] saveImageToPhotosAlbum TIMEOUT');
-    state.exportState = 'failed';
-    state.exportMsg = '保存超时';
-    markDirty();
-    try { wx.showToast({ title: '保存超时', icon: 'none' }); } catch(e) {}
-  }, 10000);
   try {
-    console.log('[EXPORT] calling saveImageToPhotosAlbum', tempPath);
-    wx.saveImageToPhotosAlbum({
-      filePath: tempPath,
+    wx.setClipboardData({
+      data: listText,
       success: () => {
-        if (responded) return;
-        responded = true;
-        clearTimeout(timeoutId);
-        console.log('[EXPORT] saveImageToPhotosAlbum success');
-        state.exportState = 'done';
-        state.exportMsg = '✓ 已保存到相册';
-        markDirty();
-        try { wx.showToast({ title: '已保存到相册', icon: 'success', duration: 2000 }); } catch(e) {}
-        setTimeout(() => { state.showExportModal = false; markDirty(); }, 2500);
+        console.log('[CLIPBOARD] ok');
+        showToast('✓ 已复制到粘贴板，可发给店主', 2200);
       },
       fail: err => {
-        if (responded) return;
-        responded = true;
-        clearTimeout(timeoutId);
-        console.error('[EXPORT] saveImageToPhotosAlbum fail', err);
-        const em = (err && err.errMsg) || JSON.stringify(err);
-        const errno = (err && err.errno) || 0;
-        state.exportState = 'failed';
-        if (errno === 1026 || em.indexOf('NeedPrivacyAuthoriz') >= 0 || em.indexOf('official popup') >= 0 || em.indexOf('onNeedPrivacy') >= 0) {
-          state.exportMsg = '需要先授权隐私协议（点击查看教程）';
-        } else if (errno === 112 || em.indexOf('api scope') >= 0 || em.indexOf('privacy agreement') >= 0) {
-          // mp.weixin.qq.com 后台未声明相册写入 scope
-          state.exportMsg = '需后台配置：mp.weixin.qq.com → 设置 → 用户隐私保护指引 → 添加 Album scope';
-          // 用 modal 详细说明
-          try { wx.showModal({
-            title: '需要后台配置',
-            content: '请到 mp.weixin.qq.com 后台：\n\n设置 → 服务类目与隐私协议 → 用户隐私保护指引 → 添加「相册写入 (Album)」scope\n\n添加后重新提交审核。',
+        console.error('[CLIPBOARD] fail', err);
+        // 失败时弹 modal 显示清单
+        try {
+          wx.showModal({
+            title: '复制失败，请手动复制',
+            content: listText,
             showCancel: false,
-            confirmText: '我知道了'
-          }); } catch(e) {}
-        } else if (em.indexOf('auth deny') >= 0 || em.indexOf('authorize') >= 0) {
-          state.exportMsg = '需要相册权限';
-        } else if (em.indexOf('deny') >= 0 || em.indexOf('cancel') >= 0) {
-          state.exportMsg = '已取消保存';
-        } else {
-          state.exportMsg = '保存失败：' + em;
+            confirmText: '关闭'
+          });
+        } catch (e2) {
+          showToast('复制失败');
         }
-        markDirty();
-        try { wx.showToast({ title: '保存失败：' + state.exportMsg.substring(0,20), icon: 'none', duration: 3000 }); } catch(e) {}
       }
     });
   } catch (e) {
-    if (!responded) {
-      responded = true;
-      clearTimeout(timeoutId);
+    console.error('[CLIPBOARD] throw', e);
+    showToast('复制失败');
+  }
+}
+
+// ===== 我的彩票库 =====
+function saveCurrentToLibrary() {
+  if (!state.currentBets || state.currentBets.length === 0) {
+    showToast('请先生成一注');
+    return;
+  }
+  try {
+    const item = library.save({
+      lottery: state.lottery,
+      bets: state.currentBets,
+      totalBets: state.totalBets,
+      totalCost: state.totalCost,
+      issue: state.historySummary.latestIssue || null
+    });
+    if (!item) {
+      showToast('保存失败');
+      return;
     }
-    console.error('[EXPORT] saveImageToPhotosAlbum throw', e);
-    state.exportState = 'failed';
-    state.exportMsg = '调用失败：' + (e.message || e);
+    state.libraryCount = library.stats().total;
+    showToast('✓ 已保存到彩票库（共 ' + state.libraryCount + ' 张）', 2200);
+    markDirty();
+  } catch (e) {
+    console.error('[library] save error', e);
+    showToast('保存失败：' + (e.message || e));
+  }
+}
+
+function openLibraryModal() {
+  state.libraryList = library.list();
+  state.libraryStats = library.stats();
+  state.libraryView = 'list';
+  state.librarySelectedId = null;
+  state.libraryScrollY = 0;
+  state.libraryDeleteTargetId = null;
+  state.showLibraryModal = true;
+  state.libraryCount = state.libraryStats.total;
+  markDirty();
+}
+
+function closeLibraryModal() {
+  state.showLibraryModal = false;
+  state.librarySelectedId = null;
+  state.libraryDeleteTargetId = null;
+  state.libraryView = 'list';
+  state.libraryScrollY = 0;
+  markDirty();
+}
+
+function refreshFromNetwork() {
+  if (state.refreshing) return;
+  state.refreshing = true;
+  markDirty();
+  showToast('🔄 拉取最新开奖...');
+  Promise.all([
+    network.fetchLatestForce('ssq').catch(() => null),
+    network.fetchLatestForce('dlt').catch(() => null),
+  ]).then(([ssqDraw, dltDraw]) => {
+    let totalUpdated = 0;
+    if (ssqDraw) totalUpdated += library.checkAll({ ssq: ssqDraw }).updated;
+    if (dltDraw) totalUpdated += library.checkAll({ dlt: dltDraw }).updated;
+    state.libraryList = library.list();
+    state.libraryStats = library.stats();
+    state.refreshing = false;
+    if (totalUpdated > 0) {
+      showToast(`✓ 已对照 ${totalUpdated} 张票`, 2000);
+    } else {
+      const ssqInfo = ssqDraw ? `SSQ ${ssqDraw.issue}` : 'SSQ -';
+      const dltInfo = dltDraw ? `DLT ${dltDraw.issue}` : 'DLT -';
+      showToast(`当前最新：${ssqInfo} / ${dltInfo}`, 2200);
+    }
+    markDirty();
+  });
+}
+
+function _hitTestLibraryModal(clientX, clientY) {
+  if (!state.showLibraryModal) return null;
+  // 关闭按钮（左下）
+  if (layoutY.libCloseX !== undefined) {
+    if (inRect(clientX, clientY, layoutY.libCloseX, layoutY.libCloseY,
+        layoutY.libCloseW, layoutY.libCloseH)) return { kind: 'libClose' };
+  }
+  // 刷新按钮（中下）
+  if (layoutY.libRefreshX !== undefined && !state.refreshing) {
+    if (inRect(clientX, clientY, layoutY.libRefreshX, layoutY.libRefreshY,
+        layoutY.libRefreshW, layoutY.libRefreshH)) return { kind: 'libRefresh' };
+  }
+  // 清空按钮（右下）
+  if (layoutY.libClearX !== undefined) {
+    if (inRect(clientX, clientY, layoutY.libClearX, layoutY.libClearY,
+        layoutY.libClearW, layoutY.libClearH)) return { kind: 'libClear' };
+  }
+  // 详情视图的返回按钮
+  if (state.libraryView === 'detail' && layoutY.libBackX !== undefined) {
+    if (inRect(clientX, clientY, layoutY.libBackX, layoutY.libBackY,
+        layoutY.libBackW, layoutY.libBackH)) return { kind: 'libBack' };
+  }
+  // 详情视图的删除按钮
+  if (state.libraryView === 'detail' && layoutY.libDeleteX !== undefined) {
+    if (inRect(clientX, clientY, layoutY.libDeleteX, layoutY.libDeleteY,
+        layoutY.libDeleteW, layoutY.libDeleteH)) return { kind: 'libDelete' };
+  }
+  // 详情视图的复制按钮
+  if (state.libraryView === 'detail' && layoutY.libCopyX !== undefined) {
+    if (inRect(clientX, clientY, layoutY.libCopyX, layoutY.libCopyY,
+        layoutY.libCopyW, layoutY.libCopyH)) return { kind: 'libCopy' };
+  }
+  // 列表项
+  if (state.libraryView === 'list' && layoutY.libItemYs) {
+    for (let i = 0; i < layoutY.libItemYs.length; i++) {
+      const it = layoutY.libItemYs[i];
+      if (inRect(clientX, clientY, layoutY.libListX, it.y - state.libraryScrollY,
+          layoutY.libListW, it.h)) return { kind: 'libItem', id: it.id, index: i };
+    }
+  }
+  // 点其他位置（modal 外）→ 关闭
+  if (layoutY.libModalX !== undefined) {
+    if (!inRect(clientX, clientY, layoutY.libModalX, layoutY.libModalY,
+        layoutY.libModalW, layoutY.libModalH)) return { kind: 'libDismiss' };
+  }
+  return null;
+}
+
+function handleLibraryModalClick(pressedBtn, clientX, clientY) {
+  if (!pressedBtn) {
+    closeLibraryModal();
+    return;
+  }
+  const k = pressedBtn.kind;
+  if (k === 'libClose' || k === 'libDismiss') {
+    closeLibraryModal();
+  } else if (k === 'libRefresh') {
+    refreshFromNetwork();
+  } else if (k === 'libClear') {
+    try {
+      wx.showModal({
+        title: '清空彩票库？',
+        content: '所有已保存的票将永久删除，无法恢复。',
+        confirmText: '清空',
+        confirmColor: '#e60012',
+        success: (res) => {
+          if (res.confirm) {
+            library.clear();
+            state.libraryList = [];
+            state.libraryCount = 0;
+            state.librarySelectedId = null;
+            state.libraryView = 'list';
+            showToast('已清空');
+            markDirty();
+          }
+        }
+      });
+    } catch (e) {
+      console.error('[library] clear confirm error', e);
+    }
+  } else if (k === 'libBack') {
+    state.libraryView = 'list';
+    state.librarySelectedId = null;
+    markDirty();
+  } else if (k === 'libDelete') {
+    state.libraryDeleteTargetId = state.librarySelectedId;
+    try {
+      wx.showModal({
+        title: '删除这张票？',
+        content: '删除后无法恢复。',
+        confirmText: '删除',
+        confirmColor: '#e60012',
+        success: (res) => {
+          if (res.confirm && state.libraryDeleteTargetId) {
+            library.remove(state.libraryDeleteTargetId);
+            state.libraryList = library.list();
+            state.libraryCount = library.stats().total;
+            state.librarySelectedId = null;
+            state.libraryView = 'list';
+            showToast('已删除');
+            markDirty();
+          }
+          state.libraryDeleteTargetId = null;
+        }
+      });
+    } catch (e) {
+      console.error('[library] delete confirm error', e);
+      state.libraryDeleteTargetId = null;
+    }
+  } else if (k === 'libCopy') {
+    const item = library.get(state.librarySelectedId);
+    if (!item) {
+      showToast('未找到该票');
+      return;
+    }
+    const txt = _buildLibraryItemText(item);
+    try {
+      wx.setClipboardData({
+        data: txt,
+        success: () => showToast('✓ 已复制', 1800),
+        fail: () => showToast('复制失败')
+      });
+    } catch (e) {
+      showToast('复制失败');
+    }
+  } else if (k === 'libItem') {
+    state.librarySelectedId = pressedBtn.id;
+    state.libraryView = 'detail';
+    state.libraryScrollY = 0;
     markDirty();
   }
 }
 
-// 简洁清单导出图（用户要的就是这个）
-// 设计：800 x (动态高) 像素，白底黑字，每注一行
-// 格式：
-//   双色球 第 2026086 期
-//   生成时间：2026-07-30 19:48
-//   ────────────────────
-//   第 1 注 (A 组)
-//   红球：09 14 22 25 28 29
-//   蓝球：11
-//   第 2 注 (A 组)
-//   ...
-//   ────────────────────
-//   合计 6 注  共 12 元
-//   彩票仅为娱乐参考，请理性购彩
-function _renderTicketForExportRaw(W2, H2) {
-  const betCount = state.currentBets.length;
-  const LINE_H = 56;          // 每行高
-  const ROW_H = LINE_H * 3 + 16; // 每注 3 行 + 间距
-  const TITLE_H = 90;
-  const DIVIDER_H = 24;
-  const FOOTER_H = 80;
-  const TARGET_H = TITLE_H + 30 + (betCount > 0 ? betCount * ROW_H + 16 : 60) + DIVIDER_H + FOOTER_H + 40;
-  // 注意：H2 是参数（外部传 1200），但我们画的内容由 TARGET_H 决定
-  // 实际 canvas 已经 resize 到 800x1200，所以我们画在 0~TARGET_H 范围内，下方留白
+function _buildLibraryItemText(item) {
+  const lines = [];
+  const lot = item.lottery === 'ssq' ? '双色球' : '大乐透';
+  const issue = item.issue ? `第 ${item.issue} 期参考` : '方案';
+  lines.push(`${lot}  ${issue}`);
+  const d = new Date(item.savedAt);
+  const ts = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  lines.push(`保存时间：${ts}`);
+  lines.push('------------------------------');
+  const primaryLabel = item.lottery === 'ssq' ? '红球' : '前区';
+  const secondaryLabel = item.lottery === 'ssq' ? '蓝球' : '后区';
+  for (const bet of item.bets) {
+    const idx = pad(bet.index);
+    lines.push(`第 ${idx} 注 (${bet.label || ''})`);
+    lines.push(primaryLabel + '：' + bet.primary.map(n => pad(Number(n))).join('  '));
+    lines.push(secondaryLabel + '：' + bet.secondary.map(n => pad(Number(n))).join('  '));
+  }
+  lines.push('------------------------------');
+  lines.push(`合计  ${item.totalBets} 注   共 ${item.totalCost} 元`);
+  lines.push('彩票仅为娱乐参考，请理性购彩');
+  return lines.join('\n');
+}
 
-  // 背景白
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, W2, H2);
+function drawLibraryModal() {
+  // 全屏半透明遮罩
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, W, H);
 
-  // 标题
-  const tx = 40;
-  let y = 30;
-  ctx.fillStyle = '#222';
-  ctx.font = 'bold 36px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  const lotteryName = state.lottery === 'ssq' ? '双色球' : '大乐透';
-  const issueText = state.historySummary.latestIssue ? `第 ${state.historySummary.latestIssue} 期参考` : '方案';
-  ctx.fillText(`${lotteryName}  ${issueText}`, tx, y);
-  y += 50;
-  // 生成时间
-  const now = new Date();
-  const timeStr = `生成时间：${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  ctx.fillStyle = '#888';
-  ctx.font = '20px sans-serif';
-  ctx.fillText(timeStr, tx, y);
-  y += 36;
+  const mw = Math.min(W - 32, 360);
+  const mh = Math.min(H - 80, 560);
+  const mx = (W - mw) / 2;
+  const my = (H - mh) / 2;
+  fillRound(mx, my, mw, mh, 14, '#fff');
+  layoutY.libModalX = mx;
+  layoutY.libModalY = my;
+  layoutY.libModalW = mw;
+  layoutY.libModalH = mh;
 
-  // 分割线
-  ctx.strokeStyle = '#222';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(tx, y); ctx.lineTo(W2 - tx, y); ctx.stroke();
-  y += 16;
+  // 标题栏
+  const titleH = 48;
+  fillRound(mx, my, mw, titleH, 14, '#1976d2');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(mx, my + titleH - 14, mw, 14);
+  const titleText = state.libraryView === 'detail' ? '📖  票详情' : '📚  我的彩票库';
+  text(titleText, mx + 16, my + 14, { size: 16, weight: 'bold', color: '#fff' });
+  text(state.libraryCount + ' 张', mx + mw - 16, my + 16, { size: 12, color: 'rgba(255,255,255,0.9)', align: 'right' });
 
-  if (betCount === 0) {
-    ctx.fillStyle = '#999';
-    ctx.font = '24px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('点击生成一注后再导出', W2 / 2, y + 30);
+  // 盈亏汇总（仅列表视图显示）
+  let contentY = my + titleH + 8;
+  let contentH = mh - titleH - 8 - 60;
+  if (state.libraryView === 'list' && state.libraryStats) {
+    const st = state.libraryStats;
+    const sumH = 56;
+    fillRound(mx + 8, contentY, mw - 16, sumH, 8, '#f5f5f5');
+    // 三列：投入 / 中奖 / 净盈亏
+    const colW = (mw - 16) / 3;
+    const ty = contentY + 10;
+    const cy = contentY + 32;
+    text('累计投入', mx + 8 + colW * 0, ty, { size: 10, color: '#666', align: 'center' });
+    text('累计中奖', mx + 8 + colW * 1, ty, { size: 10, color: '#666', align: 'center' });
+    text('净盈亏',   mx + 8 + colW * 2, ty, { size: 10, color: '#666', align: 'center' });
+    text(st.totalCost + ' 元',  mx + 8 + colW * 0, cy, { size: 14, weight: 'bold', color: '#333', align: 'center' });
+    text(st.totalPrize + ' 元', mx + 8 + colW * 1, cy, { size: 14, weight: 'bold', color: '#4caf50', align: 'center' });
+    const netColor = st.netPnL >= 0 ? '#e60012' : '#1976d2';
+    const netText = (st.netPnL >= 0 ? '+' : '') + st.netPnL + ' 元';
+    text(netText, mx + 8 + colW * 2, cy, { size: 14, weight: 'bold', color: netColor, align: 'center' });
+    // 中奖率小字
+    if (st.checkedCount > 0) {
+      const winRate = (st.wonCount / st.checkedCount * 100).toFixed(0);
+      text(`已对照 ${st.checkedCount} 张，中奖率 ${winRate}%`,
+        mx + mw / 2, contentY + sumH - 6, { size: 9, color: '#999', align: 'center' });
+    } else {
+      text('还没对照过开奖结果', mx + mw / 2, contentY + sumH - 6, { size: 9, color: '#bbb', align: 'center' });
+    }
+    contentY += sumH + 6;
+    contentH -= sumH + 6;
+  }
+
+  if (state.libraryView === 'list') {
+    drawLibraryList(mx + 14, contentY, mw - 28, contentH);
+  } else {
+    drawLibraryDetail(mx + 14, contentY, mw - 28, contentH);
+  }
+
+  // 底部按钮行
+  const btnY = my + mh - 50;
+  const btnH = 36;
+  const btnGap = 8;
+  if (state.libraryView === 'list') {
+    // 关闭 + 刷新 + 清空（三按钮）
+    const third = (mw - 28 - btnGap * 2) / 3;
+    // 关闭
+    fillRound(mx + 14, btnY, third, btnH, 8, '#f5f5f5');
+    text('关闭', mx + 14 + third / 2, btnY + (btnH - 14) / 2, { size: 13, color: '#333', align: 'center' });
+    layoutY.libCloseX = mx + 14;
+    layoutY.libCloseY = btnY;
+    layoutY.libCloseW = third;
+    layoutY.libCloseH = btnH;
+    // 刷新
+    const refreshTxt = state.refreshing ? '⏳  拉取中...' : '🔄  刷新';
+    fillRound(mx + 14 + third + btnGap, btnY, third, btnH, 8, state.refreshing ? '#fff3e0' : '#fff');
+    ctx.strokeStyle = state.refreshing ? '#ff8a00' : '#1976d2';
+    ctx.lineWidth = 1;
+    roundedRectPath(mx + 14 + third + btnGap + 0.5, btnY + 0.5, third - 1, btnH - 1, 7.5);
+    ctx.stroke();
+    text(refreshTxt, mx + 14 + third + btnGap + third / 2, btnY + (btnH - 14) / 2,
+      { size: 12, weight: 'bold', color: state.refreshing ? '#ff8a00' : '#1976d2', align: 'center' });
+    layoutY.libRefreshX = mx + 14 + third + btnGap;
+    layoutY.libRefreshY = btnY;
+    layoutY.libRefreshW = third;
+    layoutY.libRefreshH = btnH;
+    // 清空
+    const clearEnabled = state.libraryList.length > 0;
+    fillRound(mx + 14 + (third + btnGap) * 2, btnY, third, btnH, 8, clearEnabled ? '#fff' : '#f5f5f5');
+    if (clearEnabled) {
+      ctx.strokeStyle = '#e60012';
+      ctx.lineWidth = 1;
+      roundedRectPath(mx + 14 + (third + btnGap) * 2 + 0.5, btnY + 0.5, third - 1, btnH - 1, 7.5);
+      ctx.stroke();
+    }
+    text('🗑  清空', mx + 14 + (third + btnGap) * 2 + third / 2, btnY + (btnH - 14) / 2,
+      { size: 13, weight: 'bold', color: clearEnabled ? '#e60012' : '#bbb', align: 'center' });
+    layoutY.libClearX = mx + 14 + (third + btnGap) * 2;
+    layoutY.libClearY = btnY;
+    layoutY.libClearW = third;
+    layoutY.libClearH = btnH;
+  } else {
+    // 返回 + 删除 + 复制
+    const third = (mw - 28 - btnGap * 2) / 3;
+    fillRound(mx + 14, btnY, third, btnH, 8, '#f5f5f5');
+    text('← 返回', mx + 14 + third / 2, btnY + (btnH - 14) / 2, { size: 13, color: '#333', align: 'center' });
+    layoutY.libBackX = mx + 14;
+    layoutY.libBackY = btnY;
+    layoutY.libBackW = third;
+    layoutY.libBackH = btnH;
+    // 复制
+    fillRound(mx + 14 + third + btnGap, btnY, third, btnH, 8, colorByLottery(library.get(state.librarySelectedId)?.lottery || 'ssq'));
+    text('📋  复制', mx + 14 + third + btnGap + third / 2, btnY + (btnH - 14) / 2, { size: 13, weight: 'bold', color: '#fff', align: 'center' });
+    layoutY.libCopyX = mx + 14 + third + btnGap;
+    layoutY.libCopyY = btnY;
+    layoutY.libCopyW = third;
+    layoutY.libCopyH = btnH;
+    // 删除
+    fillRound(mx + 14 + (third + btnGap) * 2, btnY, third, btnH, 8, '#fff');
+    ctx.strokeStyle = '#e60012';
+    ctx.lineWidth = 1;
+    roundedRectPath(mx + 14 + (third + btnGap) * 2 + 0.5, btnY + 0.5, third - 1, btnH - 1, 7.5);
+    ctx.stroke();
+    text('🗑  删除', mx + 14 + (third + btnGap) * 2 + third / 2, btnY + (btnH - 14) / 2, { size: 13, weight: 'bold', color: '#e60012', align: 'center' });
+    layoutY.libDeleteX = mx + 14 + (third + btnGap) * 2;
+    layoutY.libDeleteY = btnY;
+    layoutY.libDeleteW = third;
+    layoutY.libDeleteH = btnH;
+  }
+}
+
+function drawLibraryList(x, y, w, h) {
+  layoutY.libListX = x;
+  layoutY.libListW = w;
+  layoutY.libItemYs = [];
+  const list = state.libraryList;
+  if (!list || list.length === 0) {
+    fillRound(x, y, w, 80, 8, '#f9f9f9');
+    text('彩票库空空如也', x + w / 2, y + 24, { size: 14, weight: 'bold', color: '#999', align: 'center' });
+    text('生成号码后点击「💾 保存到彩票库」', x + w / 2, y + 48, { size: 11, color: '#bbb', align: 'center' });
+    layoutY.libraryScrollMax = 0;
     return;
   }
-
-  // 每注
-  ctx.font = '24px sans-serif';
-  ctx.textAlign = 'left';
-  for (let i = 0; i < betCount; i++) {
-    const bet = state.currentBets[i];
-    const primary = bet.primary;
-    const secondary = bet.secondary;
-    // 注标题
-    ctx.fillStyle = '#e60012';
-    ctx.font = 'bold 26px sans-serif';
-    ctx.fillText(`第 ${bet.indexPadded} 注 (${bet.label})`, tx, y);
-    y += 36;
-    // 红球
-    ctx.fillStyle = '#e60012';
-    ctx.font = '28px sans-serif';
-    const primaryText = state.lottery === 'ssq' ? '红球：' : '前区：';
-    ctx.fillText(primaryText + primary.map(n => pad(n)).join('  '), tx, y);
-    y += 38;
-    // 蓝球
-    ctx.fillStyle = '#1976d2';
-    const secondaryText = state.lottery === 'ssq' ? '蓝球：' : '后区：';
-    ctx.fillText(secondaryText + secondary.map(n => pad(n)).join('  '), tx, y);
-    y += 42;
-    // 间隔线
-    if (i < betCount - 1) {
-      ctx.strokeStyle = '#eee';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(tx, y - 8); ctx.lineTo(W2 - tx, y - 8); ctx.stroke();
-    }
-  }
-  y += 6;
-  // 分割线
-  ctx.strokeStyle = '#222';
-  ctx.lineWidth = 2;
+  // 渲染项（按滚动偏移）
+  ctx.save();
   ctx.beginPath();
-  ctx.moveTo(tx, y); ctx.lineTo(W2 - tx, y); ctx.stroke();
-  y += 16;
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+  const rowH = 64;
+  const gap = 8;
+  let cy = y - state.libraryScrollY;
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    if (cy + rowH < y || cy > y + h) {
+      cy += rowH + gap;
+      continue;
+    }
+    fillRound(x, cy, w, rowH, 8, '#fafafa');
+    layoutY.libItemYs.push({ id: item.id, y: cy, h: rowH });
+    // 左侧色条（已中奖变绿，未中变灰，待开奖保持彩种色）
+    const lot = item.lottery === 'ssq' ? '#e60012' : '#ff6f00';
+    let leftBar = lot;
+    if (item.result) {
+      leftBar = item.result.hitRank <= 8 ? '#4caf50' : '#bbb';
+    }
+    ctx.fillStyle = leftBar;
+    ctx.fillRect(x + 4, cy + 8, 4, rowH - 16);
+    // 标题行：彩票名 + 期号
+    const lotName = item.lottery === 'ssq' ? '双色球' : '大乐透';
+    text(lotName, x + 14, cy + 10, { size: 13, weight: 'bold', color: lot });
+    const issueStr = item.issue ? `第 ${item.issue} 期` : '方案';
+    text(issueStr, x + 80, cy + 10, { size: 11, color: '#666' });
+    // 时间
+    const d = new Date(item.savedAt);
+    const timeStr = `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    text(timeStr, x + w - 14, cy + 10, { size: 10, color: '#999', align: 'right' });
+    // 第二行：状态徽标 + 第一注预览
+    let badge, badgeColor;
+    if (item.result) {
+      if (item.result.hitRank <= 8) {
+        badge = `✓ ${item.result.hitLevel}`;
+        badgeColor = '#4caf50';
+      } else {
+        badge = '✗ 未中奖';
+        badgeColor = '#999';
+      }
+    } else {
+      badge = '⏳ 待开奖';
+      badgeColor = '#ff8a00';
+    }
+    text(badge, x + 14, cy + 32, { size: 11, weight: 'bold', color: badgeColor });
+    if (item.bets && item.bets[0]) {
+      const b0 = item.bets[0];
+      const primStr = (b0.primary || []).slice(0, 3).map(n => pad(Number(n))).join(' ');
+      const more = b0.primary && b0.primary.length > 3 ? `...` : '';
+      text(`第 1 注 ${primStr}${more}`, x + 90, cy + 32, { size: 11, color: '#333' });
+    }
+    // 第三行：投入/奖金 + 点击提示
+    let moneyLine = `${item.totalBets} 注  ·  投入 ${item.totalCost} 元`;
+    if (item.result) {
+      moneyLine += `  ·  奖金 ${item.result.prizeAmount} 元`;
+    }
+    moneyLine += '  ·  点击查看详情 →';
+    text(moneyLine, x + 14, cy + 48, { size: 10, color: '#999' });
+    cy += rowH + gap;
+  }
+  ctx.restore();
+  layoutY.libraryScrollMax = Math.max(0, list.length * (rowH + gap) - h);
+}
+
+function drawLibraryDetail(x, y, w, h) {
+  const item = library.get(state.librarySelectedId);
+  if (!item) {
+    fillRound(x, y, w, 80, 8, '#f9f9f9');
+    text('未找到该票', x + w / 2, y + 32, { size: 14, color: '#999', align: 'center' });
+    return;
+  }
+  // 头部信息
+  const d = new Date(item.savedAt);
+  const timeStr = `保存于 ${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  text(timeStr, x, y, { size: 11, color: '#666' });
+  const issueStr = item.issue ? `参考期号：${item.issue}` : '无期号';
+  text(issueStr, x + w, y, { size: 11, color: '#666', align: 'right' });
+
+  // 开奖对照结果（如果有）
+  let resultH = 0;
+  let cy = y + 18;
+  if (item.result) {
+    const r = item.result;
+    const isWon = r.hitRank <= 8;
+    const cardH = 50;
+    fillRound(x, cy, w, cardH, 6, isWon ? '#e8f5e9' : '#f5f5f5');
+    // 开奖号码
+    const drawPrim = (r.primary || []).map(n => pad(Number(n))).join(' ');
+    const drawSec = Array.isArray(r.secondary) ? r.secondary.map(n => pad(Number(n))).join(' ') : pad(Number(r.secondary));
+    text(`开奖 ${r.issue} 期：`, x + 8, cy + 8, { size: 10, color: '#666' });
+    text(drawPrim, x + 8, cy + 22, { size: 12, color: '#e60012', weight: 'bold' });
+    text(drawSec, x + 8 + drawPrim.length * 7 + 8, cy + 22, { size: 12, color: '#1976d2', weight: 'bold' });
+    // 命中等级
+    const lvlColor = isWon ? '#4caf50' : '#999';
+    const lvlText = isWon ? `✓ ${r.hitLevel}  +${r.prizeAmount} 元` : '✗ 未中奖';
+    text(lvlText, x + w - 8, cy + 8, { size: 12, weight: 'bold', color: lvlColor, align: 'right' });
+    text(`开奖日：${r.date || '-'}`, x + w - 8, cy + 30, { size: 9, color: '#999', align: 'right' });
+    resultH = cardH + 8;
+    cy += resultH;
+  } else {
+    fillRound(x, cy, w, 36, 6, '#fff8e1');
+    text('⏳  还未开奖（启动时会自动联网对照）', x + w / 2, cy + 12, { size: 10, color: '#ff8a00', align: 'center' });
+    resultH = 36 + 8;
+    cy += resultH;
+  }
+
+  // 滚动内容（每注）
+  const rowH = 52;
+  const startY = cy;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, startY, w, h - (startY - y));
+  ctx.clip();
+  cy = startY - state.libraryScrollY;
+  const lot = item.lottery === 'ssq' ? '#e60012' : '#ff6f00';
+  // 每注：注号 + 号码 + 命中标记
+  const perBetMap = {};
+  if (item.result && item.result.perBet) {
+    item.result.perBet.forEach(pb => { perBetMap[pb.index] = pb; });
+  }
+  for (let i = 0; i < item.bets.length; i++) {
+    const b = item.bets[i];
+    if (cy + rowH < startY || cy > startY + (h - (startY - y))) {
+      cy += rowH + 4;
+      continue;
+    }
+    const pb = perBetMap[b.index];
+    const won = pb && pb.hitRank <= 8;
+    fillRound(x, cy, w, rowH - 4, 4, won ? '#e8f5e9' : '#fafafa');
+    text(`第 ${pad(b.index)} 注`, x + 6, cy + 4, { size: 11, color: lot, weight: 'bold' });
+    const primStr = (b.primary || []).map(n => pad(Number(n))).join(' ');
+    const secStr = Array.isArray(b.secondary)
+      ? b.secondary.map(n => pad(Number(n))).join(' ')
+      : pad(Number(b.secondary));
+    text(primStr, x + 6, cy + 22, { size: 12, color: lot, weight: 'bold' });
+    text(secStr, x + 6 + primStr.length * 7 + 6, cy + 22, { size: 12, color: '#1976d2', weight: 'bold' });
+    // 右侧：命中等级（如果有 result）
+    if (pb) {
+      const lvlTxt = pb.hitRank <= 8 ? `${pb.hitLevel} +${pb.prizeAmount}` : '未中奖';
+      const lvlCol = pb.hitRank <= 8 ? '#4caf50' : '#999';
+      text(lvlTxt, x + w - 6, cy + 4, { size: 10, weight: 'bold', color: lvlCol, align: 'right' });
+      text(`命中 ${pb.primaryHit}+${pb.secondaryHit}`, x + w - 6, cy + 22, { size: 9, color: '#999', align: 'right' });
+    }
+    cy += rowH;
+  }
   // 合计
-  ctx.fillStyle = '#222';
-  ctx.font = 'bold 28px sans-serif';
-  ctx.fillText(`合计  ${state.totalBets} 注   共 ${state.totalCost} 元`, tx, y);
-  y += 50;
-  // 免责声明
-  ctx.fillStyle = '#999';
-  ctx.font = '20px sans-serif';
-  ctx.fillText('彩票仅为娱乐参考，请理性购彩', tx, y);
+  cy += 8;
+  let summary = `${item.totalBets} 注  ·  投入 ${item.totalCost} 元`;
+  if (item.result) {
+    const net = item.result.prizeAmount - item.totalCost;
+    const netTxt = (net >= 0 ? '+' : '') + net;
+    summary += `  ·  奖金 ${item.result.prizeAmount} 元  ·  净 ${netTxt} 元`;
+  }
+  text(summary, x, cy, { size: 11, color: '#666', weight: 'bold' });
+  ctx.restore();
+  layoutY.libraryScrollMax = Math.max(0, item.bets.length * rowH + 16 - (h - (startY - y)));
 }
 
-function _drawExportBetRowRaw(c, bet, y, tx, tw) {
-  const x = tx + 28;
-  const w = tw - 56;
-  const h = 80;
-  c.fillStyle = '#fafafa';
-  c.beginPath();
-  c.moveTo(x + 8, y); c.arcTo(x + w, y, x + w, y + 8, 8);
-  c.lineTo(x + w, y + h - 8); c.arcTo(x + w, y + h, x + w - 8, y + h, 8);
-  c.lineTo(x + 8, y + h); c.arcTo(x, y + h, x, y + h - 8, 8);
-  c.lineTo(x, y + 8); c.arcTo(x, y, x + 8, y, 8);
-  c.closePath(); c.fill();
-  const color = colorByLottery(state.lottery);
-  c.fillStyle = color;
-  c.beginPath();
-  c.moveTo(x + 20, y + 12); c.arcTo(x + 64, y + 12, x + 64, y + 56, 6);
-  c.lineTo(x + 64, y + 56); c.arcTo(x + 64, y + 62, x + 58, y + 62, 6);
-  c.lineTo(x + 20, y + 62); c.arcTo(x + 14, y + 62, x + 14, y + 56, 6);
-  c.lineTo(x + 14, y + 18); c.arcTo(x + 14, y + 12, x + 20, y + 12, 6);
-  c.closePath(); c.fill();
-  c.fillStyle = '#fff';
-  c.font = 'bold 22px sans-serif';
-  c.textAlign = 'center';
-  c.textBaseline = 'middle';
-  c.fillText(bet.indexPadded, x + 39, y + 38);
-  c.font = '12px sans-serif';
-  c.fillText(bet.label, x + 39, y + 72);
-  const primary = bet.primary;
-  const secondary = bet.secondary;
-  const ballStartX = x + 84;
-  const ballSize = 36;
-  const ballGap = 6;
-  for (let i = 0; i < primary.length; i++) {
-    _drawExportBallRaw(c, ballStartX + i * (ballSize + ballGap), y + 12, ballSize, primary[i]);
-  }
-  const sepX = ballStartX + primary.length * (ballSize + ballGap) + 4;
-  c.strokeStyle = '#ddd';
-  c.lineWidth = 1;
-  c.beginPath();
-  c.moveTo(sepX, y + 16); c.lineTo(sepX, y + 52); c.stroke();
-  for (let i = 0; i < secondary.length; i++) {
-    _drawExportBallRaw(c, sepX + 6 + i * (ballSize + ballGap), y + 12, ballSize, secondary[i], '#1976d2');
-  }
-  return y + h;
+// ===== Toast =====
+function showToast(msg, duration) {
+  state.toastText = msg;
+  state.toastUntil = Date.now() + (duration || 1500);
+  markDirty();
 }
 
-function _drawExportBallRaw(c, x, y, size, ball, fallbackColor) {
-  const col = ball.color || fallbackColor || '#e60012';
-  c.fillStyle = col;
-  c.beginPath();
-  c.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2);
-  c.fill();
-  c.fillStyle = '#fff';
-  c.font = 'bold 18px sans-serif';
-  c.textAlign = 'center';
-  c.textBaseline = 'middle';
-  c.fillText(ball.padded, x + size / 2, y + size / 2);
-  if (ball.freq) {
-    c.font = '10px sans-serif';
-    c.fillText(String(ball.freq), x + size / 2, y + size - 5);
+function drawToast() {
+  if (!state.toastText) return;
+  if (Date.now() > state.toastUntil) {
+    state.toastText = '';
+    return;
+  }
+  const msg = state.toastText;
+  ctx.font = '14px sans-serif';
+  const w = ctx.measureText(msg).width + 36;
+  const h = 36;
+  const x = (W - w) / 2;
+  const y = H - 80;
+  ctx.globalAlpha = 0.92;
+  fillRound(x, y, w, h, 18, 'rgba(0,0,0,0.78)');
+  ctx.globalAlpha = 1;
+  text(msg, W / 2, y + (h - 14) / 2, { size: 14, color: '#fff', align: 'center' });
+  // 持续重绘直到 toast 结束
+  setTimeout(markDirty, 200);
+}
+
+// ===== 启动时刷新彩票库计数 =====
+function refreshLibraryCount() {
+  try {
+    state.libraryCount = library.stats().total;
+  } catch (e) {
+    state.libraryCount = 0;
   }
 }
 
@@ -1292,11 +1378,17 @@ function setupTouch() {
     const t = e.touches[0];
     state.touchStartY = t.clientY;
     state.touchLastY = t.clientY;
+    state.touchLastX = t.clientX;
     state.touchStartScroll = state.scrollY;
     state.touchStartTime = Date.now();
     state.scrollVelocity = 0;   // 重新触摸取消惯性
     if (_inertiaRAF) { cancelAnimationFrame(_inertiaRAF); _inertiaRAF = null; }
-    state.pressedBtn = _hitTestButtons(t.clientX, t.clientY);
+    // modal 打开时，尝试命中 modal 内的按钮
+    if (state.showLibraryModal) {
+      state.pressedBtn = _hitTestLibraryModal(t.clientX, t.clientY);
+    } else {
+      state.pressedBtn = _hitTestButtons(t.clientX, t.clientY);
+    }
     // 调试日志：用户可在 vConsole 中看到每次触摸的位置和命中结果
     const _sy = -state.scrollY;
     console.log('[TOUCH]', t.clientX, t.clientY, 'scrollY=', state.scrollY, 'layoutY=', JSON.stringify({
@@ -1308,9 +1400,21 @@ function setupTouch() {
   wx.onTouchMove(e => {
     const t = e.touches[0];
     const curY = t.clientY;
+    const curX = t.clientX;
     const dy = curY - state.touchLastY;   // 上一帧增量
     state.touchLastY = curY;
+    state.touchLastX = curX;
     if (Math.abs(curY - state.touchStartY) > 4) state.pressedBtn = null;
+    // 彩票库 modal 打开时，滚 modal 内
+    if (state.showLibraryModal) {
+      // 滚动 modal 列表
+      state.libraryScrollY -= dy;
+      if (state.libraryScrollY < 0) state.libraryScrollY = 0;
+      const libMax = layoutY.libraryScrollMax || 0;
+      if (state.libraryScrollY > libMax) state.libraryScrollY = libMax;
+      markDirty();
+      return;
+    }
     // 增量累加：手指上滑 dy<0 → scrollY 增大（看下方内容，符合自然滚动）
     state.scrollY -= dy;
     if (state.scrollY < state.scrollMin) state.scrollY = state.scrollMin;
@@ -1322,17 +1426,15 @@ function setupTouch() {
     state.scrollVelocity = -(state.scrollY - state.touchStartScroll) / dt;
   });
   wx.onTouchEnd(() => {
-    console.log('[TOUCH-END] pressedBtn=', state.pressedBtn && state.pressedBtn.kind || 'none', 'showExportModal=', state.showExportModal, 'currentBets=', state.currentBets.length);
-    // 导出 modal 打开时：点关闭按钮 / 点其他位置都关闭
-    if (state.showExportModal) {
-      state.showExportModal = false;
-      state.exportState = 'idle';
-      state.exportMsg = '';
+    console.log('[TOUCH-END] pressedBtn=', state.pressedBtn && state.pressedBtn.kind || 'none', 'showLibraryModal=', state.showLibraryModal, 'currentBets=', state.currentBets.length);
+    // 彩票库 modal 打开时：优先处理 modal 内的按钮
+    if (state.showLibraryModal) {
+      handleLibraryModalClick(state.pressedBtn, state.touchLastX, state.touchLastY);
       state.pressedBtn = null;
       state.scrollVelocity = 0;
-      markDirty();
       return;
     }
+
     // 先看是否是按钮点击
     if (state.pressedBtn) {
       if (state.pressedBtn.kind === 'tab' && state.lottery !== state.pressedBtn.val) {
@@ -1342,7 +1444,12 @@ function setupTouch() {
       } else if (state.pressedBtn.kind === 'generate' && !state.generating) {
         generate();
       } else if (state.pressedBtn.kind === 'export') {
-        showExportModal();
+        // 现在导出按钮只复制到粘贴板
+        copyToClipboard();
+      } else if (state.pressedBtn.kind === 'save') {
+        saveCurrentToLibrary();
+      } else if (state.pressedBtn.kind === 'library') {
+        openLibraryModal();
       }
       state.pressedBtn = null;
       state.scrollVelocity = 0;
@@ -1414,8 +1521,39 @@ if (typeof wx.requirePrivacyAuthorize === 'function') {
 initCanvas();
 updateTime();
 setInterval(updateTime, 60000);
+refreshLibraryCount();
 generate();
 setupTouch();
 loop();
+
+// 启动后异步拉取最新开奖 + 对照库（不阻塞渲染）
+function _bootstrapFetch() {
+  // 拉 SSQ
+  network.fetchLatest('ssq').then(draw => {
+    if (draw) {
+      console.log('[BOOT] latest SSQ:', draw.issue);
+      const r = library.checkAll({ ssq: draw });
+      if (r.updated > 0) {
+        showToast(`✓ 已对照 ${r.updated} 张票（最新 ${draw.issue}）`, 2000);
+        state.libraryStats = library.stats();
+        state.libraryCount = state.libraryStats.total;
+        markDirty();
+      }
+    }
+  }).catch(e => console.error('[BOOT] ssq fetch error', e));
+  // 拉 DLT（cwl 可能返回空，失败也无所谓）
+  network.fetchLatest('dlt').then(draw => {
+    if (draw && draw.issue) {
+      console.log('[BOOT] latest DLT:', draw.issue);
+      const r = library.checkAll({ dlt: draw });
+      if (r.updated > 0) {
+        state.libraryStats = library.stats();
+        state.libraryCount = state.libraryStats.total;
+        markDirty();
+      }
+    }
+  }).catch(e => console.error('[BOOT] dlt fetch error', e));
+}
+setTimeout(_bootstrapFetch, 1500);  // 等首屏画完再触发
 
 wx.onShow(() => updateTime());
