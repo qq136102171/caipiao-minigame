@@ -1,7 +1,7 @@
 {
   "lottery_type": "ssq",
-  "last_update": "2026-07-30",
-  "total_draws": 2044,
+  "last_update": "2026-07-31",
+  "total_draws": 2045,
   "primary_label": "红球",
   "secondary_label": "蓝球",
   "primary_max": 33,
@@ -26578,6 +26578,19 @@
         32
       ],
       "blue": 5
+    },
+    {
+      "issue": "2026087",
+      "date": "2026-07-30",
+      "reds": [
+        4,
+        6,
+        10,
+        18,
+        23,
+        31
+      ],
+      "blue": 11
     }
   ]
 }
