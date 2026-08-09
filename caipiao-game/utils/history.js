@@ -211,6 +211,182 @@ function analyzeBet(kind, primaryNumbers, secondaryNumbers) {
   };
 }
 
+// ===== 期间计算（截止时间逻辑）=====
+//
+// 彩票规则：
+//   SSQ（双色球）：每周日/二/四 21:30 开奖
+//                 销售截止：开奖当日 20:00
+//   DLT（大乐透）：每周一/三/六 20:30 开奖
+//                 销售截止：开奖当日 19:00
+//
+// 业务规则：
+//   截止时间前 → 生成"当期"号码（即下一次开奖的期号）
+//   截止时间后 → 生成"下一期"号码（即再下一次开奖的期号）
+//   这样确保：保存到彩票库的票，开奖后能正确对照
+//
+// 期间号规则（每年从 001/0001 重新计）：
+//   SSQ: YYYYNNN  (如 2026088)
+//   DLT: YYNNN    (如 26086)
+
+const DRAW_RULES = {
+  ssq: {
+    drawDays: [0, 2, 4],   // 周日(0)、周二(2)、周四(4)
+    drawHour: 21,
+    drawMin:  30,
+    cutoffHour: 20,
+    cutoffMin:  0,
+  },
+  dlt: {
+    drawDays: [1, 3, 6],   // 周一(1)、周三(3)、周六(6)
+    drawHour: 20,
+    drawMin:  30,
+    cutoffHour: 19,
+    cutoffMin:  0,
+  },
+};
+
+/**
+ * 找下一次开奖日（含今天若今天就是开奖日且未开奖）
+ * @returns {Date} 开奖日（时分秒设为开奖时刻）
+ */
+function _nextDrawDate(lottery, now) {
+  const r = DRAW_RULES[lottery];
+  const candidate = new Date(now);
+  candidate.setHours(r.drawHour, r.drawMin, 0, 0);
+  if (r.drawDays.includes(candidate.getDay()) && now < candidate) {
+    return candidate;
+  }
+  // 否则往后 1-7 天找
+  for (let i = 1; i <= 7; i++) {
+    const d = new Date(candidate);
+    d.setDate(candidate.getDate() + i);
+    if (r.drawDays.includes(d.getDay())) {
+      d.setHours(r.drawHour, r.drawMin, 0, 0);
+      return d;
+    }
+  }
+  return null;
+}
+
+/**
+ * 计算从基准日（含）到目标日（含）之间有多少个"开奖日"
+ * 仅在同一年内有效
+ */
+function _countDrawDaysInYear(lottery, fromDate, toDate) {
+  const r = DRAW_RULES[lottery];
+  const yearStart = new Date(toDate.getFullYear(), 0, 1);
+  let count = 0;
+  const cur = new Date(yearStart);
+  while (cur <= toDate) {
+    if (r.drawDays.includes(cur.getDay())) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+}
+
+/**
+ * 根据当前时间 + 彩票类型 + 历史最新期，计算：
+ *   - currentPeriod: "当期"期号（下一个开奖日）
+ *   - targetPeriod:  "目标"期号（截止前=当期，截止后=下一期）
+ *   - drawDate:      当期开奖日
+ *   - targetDate:    目标期开奖日
+ *   - isNextPeriod:  是否已过截止（true=生成的票是下一期）
+ *   - daysUntilDraw: 距离当期开奖还有几天（0=今天）
+ *   - hoursUntilCutoff: 距离当期截止还有几小时（负数=已截止）
+ *
+ * @param {'ssq'|'dlt'} lottery
+ * @param {Date} [now] 不传则用 new Date()
+ */
+function getCurrentPeriod(lottery, now) {
+  if (!now) now = new Date();
+  const r = DRAW_RULES[lottery];
+  if (!r) {
+    return { error: `unknown lottery: ${lottery}` };
+  }
+
+  // 1) 找"当期"开奖日（下一次开奖）
+  const drawDate = _nextDrawDate(lottery, now);
+
+  // 2) 找"目标"开奖日（截止前=当期，截止后=下一期）
+  const cutoff = new Date(drawDate);
+  cutoff.setHours(r.cutoffHour, r.cutoffMin, 0, 0);
+  let targetDate = drawDate;
+  let isNextPeriod = false;
+  if (now >= cutoff) {
+    isNextPeriod = true;
+    for (let i = 1; i <= 7; i++) {
+      const d = new Date(drawDate);
+      d.setDate(drawDate.getDate() + i);
+      if (r.drawDays.includes(d.getDay())) {
+        d.setHours(r.drawHour, r.drawMin, 0, 0);
+        targetDate = d;
+        break;
+      }
+    }
+  }
+
+  // 3) 计算当期 + 目标期号（基于历史最新期 + 推算）
+  const draws = loadHistory(lottery);
+  const latest = draws[draws.length - 1];
+  const latestDate = new Date(latest.date);
+  const latestIssue = latest.issue;
+  const latestYear = lottery === 'ssq' ? parseInt(latestIssue.slice(0, 4)) : 2000 + parseInt(latestIssue.slice(0, 2));
+  const latestNum = lottery === 'ssq' ? parseInt(latestIssue.slice(4)) : parseInt(latestIssue.slice(2));
+
+  function _walk(fromDate, toDate) {
+    // 从 fromDate（不含）到 toDate（含）的开奖日数
+    const d = new Date(fromDate);
+    d.setDate(d.getDate() + 1);
+    let n = 0;
+    while (d <= toDate) {
+      if (r.drawDays.includes(d.getDay())) n++;
+      d.setDate(d.getDate() + 1);
+    }
+    return n;
+  }
+
+  function _formatPeriod(year, num) {
+    if (lottery === 'ssq') {
+      return String(year) + String(num).padStart(3, '0');
+    } else {
+      return String(year).slice(-2) + String(num).padStart(3, '0');
+    }
+  }
+
+  function _issueFor(targetD) {
+    const tYear = targetD.getFullYear();
+    if (tYear === latestYear) {
+      const n = _walk(latestDate, targetD);
+      return _formatPeriod(tYear, latestNum + n);
+    } else {
+      // 跨年了：当年从 1 开始
+      const n = _countDrawDaysInYear(lottery, latestDate, targetD);
+      return _formatPeriod(tYear, n);
+    }
+  }
+
+  const currentPeriod = _issueFor(drawDate);
+  const targetPeriod = _issueFor(targetDate);
+
+  // 4) 倒计时
+  const daysUntilDraw = Math.floor((drawDate - now) / 86400000);
+  const hoursUntilCutoff = (cutoff - now) / 3600000;
+
+  return {
+    lottery,
+    lotteryName: lottery === 'ssq' ? '双色球' : '大乐透',
+    currentPeriod,    // 当期期号
+    targetPeriod,     // 目标期号（截止后=下一期）
+    drawDate,         // 当期开奖日
+    targetDate,       // 目标期开奖日
+    cutoff,           // 当期截止时间
+    isNextPeriod,     // 是否已过截止
+    isAfterDraw:      now >= drawDate,  // 当期是否已开奖
+    daysUntilDraw,
+    hoursUntilCutoff,
+  };
+}
+
 // ===== 摘要 =====
 
 function getSummary(kind) {
@@ -235,5 +411,7 @@ module.exports = {
   getTopBottom,
   analyzeBet,
   getSummary,
+  getCurrentPeriod,
   RULES,
+  DRAW_RULES,
 };

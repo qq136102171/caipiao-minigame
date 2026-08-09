@@ -1,0 +1,124 @@
+name: 自动更新历史开奖号码
+
+# 每天北京时间 22:00（UTC 14:00）拉取最新一期开奖
+on:
+  schedule:
+    # 每天 22:00 北京时间（UTC 14:00）跑一次
+    - cron: '0 14 * * *'
+  workflow_dispatch:    # 允许手动触发
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/history-update.yml'
+      - 'fetch_history.py'
+      - 'history.py'
+      - 'scripts/sync_history_to_game.py'
+
+permissions:
+  contents: write    # 允许自动 commit / push
+
+jobs:
+  update-history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 显示版本信息
+        run: |
+          python3 --version
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          echo "✓ git user 配置完成"
+
+      - name: 备份现有数据（以防拉取失败）
+        run: |
+          mkdir -p /tmp/history_backup
+          cp data/ssq_history.json /tmp/history_backup/ || true
+          cp data/dlt_history.json /tmp/history_backup/ || true
+          ls -la /tmp/history_backup/
+
+      - name: 拉取双色球最新数据
+        id: fetch_ssq
+        continue-on-error: true
+        run: |
+          echo "==> 拉取 SSQ（拉最近 30 期）"
+          python3 fetch_history.py fetch --type ssq --limit 30
+
+      - name: 拉取大乐透最新数据
+        id: fetch_dlt
+        continue-on-error: true
+        run: |
+          echo "==> 拉取 DLT（拉最近 30 期）"
+          python3 fetch_history.py fetch --type dlt --limit 30
+
+      - name: 检测数据变化
+        id: check_diff
+        run: |
+          if git diff --quiet data/ caipiao-game/data/ 2>/dev/null; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "✓ 没有新数据，跳过 commit"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "==> 检测到新数据："
+            git diff --stat data/ caipiao-game/data/ 2>/dev/null | head -20
+          fi
+
+      - name: 同步 JSON → 小游戏 JS 模块
+        if: steps.check_diff.outputs.changed == 'true'
+        run: |
+          echo "==> 调用 sync_history_to_game.py"
+          python3 scripts/sync_history_to_game.py
+
+      - name: 校验数据格式
+        if: steps.check_diff.outputs.changed == 'true'
+        run: |
+          python3 << 'EOF'
+          import re, sys
+          issues = []
+          for f in ["caipiao-game/data/ssq_history.js",
+                    "caipiao-game/data/dlt_history.js"]:
+              lines = re.findall(r'"([^"]+)"', open(f).read())
+              data = [l for l in lines if "|" in l]
+              if not data:
+                  issues.append(f"{f}: 无数据")
+                  continue
+              for line in data:
+                  parts = line.split("|")
+                  if len(parts) != 4:
+                      issues.append(f"{f}: 格式错误 {line[:60]}")
+                      break
+              print(f"  ✓ {f}: {len(data)} 期合法")
+          if issues:
+              for i in issues: print(f"  ✗ {i}")
+              sys.exit(1)
+          EOF
+
+      - name: 自动提交
+        if: steps.check_diff.outputs.changed == 'true'
+        run: |
+          git add data/ caipiao-game/data/
+          if git diff --cached --quiet; then
+            echo "没有 staged 变更，跳过 commit"
+            exit 0
+          fi
+          # 获取最新一条 commit 的 message 作为前缀
+          LAST_MSG="$(git log -1 --pretty=%s 2>/dev/null || echo 'update')"
+          COMMIT_MSG="chore(history): 自动更新开奖数据
+
+          - 更新时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          - 触发方式: ${{ github.event_name }}
+          - 上次 commit: ${LAST_MSG:0:60}
+          "
+          git commit -m "$COMMIT_MSG"
+          echo "✅ 已 commit"
+          git log -1 --oneline
+          echo "PUSH_START"
+          git push origin HEAD:main
+          echo "PUSH_END"

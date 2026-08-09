@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 APP_NAME="CaiPiao"
-DISPLAY_NAME="彩票投注方案生成器"
+DISPLAY_NAME="发财致富记录器"
 BUNDLE_ID="com.local.caipiao.launcher"
 VERSION="1.0.0"
 

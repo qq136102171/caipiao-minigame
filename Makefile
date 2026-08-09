@@ -69,6 +69,12 @@ HIST_SECONDARY ?= 12
 history-analyze: $(VENV)/bin/python
 	$(VENV_PY) history.py analyze --type $(HIST_TYPE) --primary "$(HIST_PRIMARY)" --secondary "$(HIST_SECONDARY)"
 
+sync-game-history: $(VENV)/bin/python
+	$(VENV_PY) scripts/sync_history_to_game.py
+
+sync-game-history-check: $(VENV)/bin/python
+	$(VENV_PY) scripts/sync_history_to_game.py --check
+
 clean:
 	rm -rf $(VENV) dist
 	find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true

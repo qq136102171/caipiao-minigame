@@ -1,4 +1,4 @@
-# 彩票投注方案生成器（双色球 + 大乐透）
+# 发财致富记录器（双色球 + 大乐透）
 
 一个用 Flask 实现的本地选号小工具。提供：
 
@@ -253,7 +253,7 @@ bash build_app.sh /Applications/CaiPiao
 ```
 dist/CaiPiao.app/
 ├── Contents/
-│   ├── Info.plist          # CFBundleDisplayName = "彩票投注方案生成器"
+│   ├── Info.plist          # CFBundleDisplayName = "发财致富记录器"
 │   ├── PkgInfo             # APPL????
 │   ├── MacOS/
 │   │   └── CaiPiao         # 启动器（launcher.sh 的副本）
@@ -263,7 +263,7 @@ dist/CaiPiao.app/
 ```
 
 **双击 `dist/CaiPiao.app`** 后会：
-1. 弹出 Terminal 窗口，标题为"彩票投注方案生成器"
+1. 弹出 Terminal 窗口，标题为"发财致富记录器"
 2. 第一次运行会自动创建 `.venv` 并安装依赖（约 8 秒）
 3. 启动 Flask 后端，监听 `http://127.0.0.1:1688`
 4. 自动用默认浏览器打开 `http://127.0.0.1:1688`

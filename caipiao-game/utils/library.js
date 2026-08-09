@@ -275,17 +275,46 @@ function stats() {
 }
 
 /**
- * 一键对照所有待开奖票（用某个 drawMap: {ssq: drawObj, dlt: drawObj}）
- * 返回命中的票数 + 总奖金变化
+ * 一键对照所有待开奖票
+ * drawMap: { ssq: latestDraw, dlt: latestDraw }（网络最新）
+ * 同时用本地 history（覆盖所有期号）
+ * v1.4.5: 修 ticket.issue 必须 == draw.issue；清理错配的旧 result
  */
 function checkAll(drawMap) {
   const arr = _read();
   let updated = 0;
   let prizeDelta = 0;
+  let cleared = 0;
+  // 1. 先加载所有 history，构建 issue -> draw 的 map
+  const drawMapByIssue = { ssq: {}, dlt: {} };
+  try {
+    const history = require('./history.js');
+    const ssqAll = history.loadHistory('ssq');
+    ssqAll.forEach(d => { drawMapByIssue.ssq[d.issue] = d; });
+    const dltAll = history.loadHistory('dlt');
+    dltAll.forEach(d => { drawMapByIssue.dlt[d.issue] = d; });
+  } catch (e) {
+    console.error('[library] loadHistory error', e);
+  }
+  // 2. 用网络最新 draw 覆盖（确保最新期用最新数据）
+  if (drawMap) {
+    Object.keys(drawMap).forEach(lot => {
+      const d = drawMap[lot];
+      if (d && d.issue) drawMapByIssue[lot][d.issue] = d;
+    });
+  }
+  // 3. 对每张票处理
   for (let i = 0; i < arr.length; i++) {
     const x = arr[i];
-    if (x.result) continue;  // 已对照过
-    const draw = drawMap && drawMap[x.lottery];
+    // 3a. 清理错配的旧 result（result.issue != ticket.issue）
+    if (x.result && x.issue && x.result.issue !== x.issue) {
+      console.log(`[library] clear bogus result for ${x.lottery} ${x.issue} (was checked against ${x.result.issue})`);
+      arr[i].result = null;
+      cleared++;
+    }
+    if (x.result) continue;  // 已对照过（且 issue 匹配）
+    // 3b. 找对应的 draw（必须 issue 匹配）
+    const draw = drawMapByIssue[x.lottery] && drawMapByIssue[x.lottery][x.issue];
     if (!draw) continue;
     const result = checkItem(x, draw);
     if (!result) continue;
@@ -293,8 +322,8 @@ function checkAll(drawMap) {
     updated++;
     prizeDelta += result.prizeAmount;
   }
-  if (updated > 0) _write(arr);
-  return { updated, prizeDelta };
+  if (updated > 0 || cleared > 0) _write(arr);
+  return { updated, cleared, prizeDelta };
 }
 
 module.exports = {

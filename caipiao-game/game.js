@@ -1,5 +1,5 @@
 /**
- * 彩票投注方案生成器 - 微信小游戏
+ * 发财致富记录器 - 微信小游戏
  *
  * 入口：wx.createCanvas() + requestAnimationFrame() 主循环
  * 渲染：Canvas 2D 完整复刻原小程序的票面/号码球/历史分析/热冷号
@@ -8,7 +8,8 @@
 
 const { generateSSQ } = require('./utils/generator.js');
 const { generateDLT } = require('./utils/dlt.js');
-const { analyzeBet, getSummary, getTopBottom } = require('./utils/history.js');
+const { analyzeBet, getSummary, getTopBottom, getCurrentPeriod, loadHistory } = require('./utils/history.js');
+const history = require('./utils/history.js');  // namespace 形式，兼容 history.xxx 调用
 const library = require('./utils/library.js');
 const network = require('./utils/network.js');
 
@@ -46,6 +47,7 @@ const state = {
   // ===== 最新开奖（启动联网拉） =====
   latestDraw: { ssq: null, dlt: null },
   latestDrawLoading: false,
+  latestDrawFromCache: { ssq: false, dlt: false },  // 标记是否来自缓存（用于显示「点击刷新」）
   libraryList: [],
   librarySelectedId: null,
   libraryScrollY: 0,
@@ -105,7 +107,14 @@ function generate() {
   state.generating = true;
   try {
     const kind = state.lottery;
-    const result = kind === 'ssq' ? generateSSQ() : generateDLT();
+    // ★v3：从本地 history 拿最新一期作为 lastDraw，让算法能基于"上期"调整
+    const histDraws = loadHistory(kind);
+    const lastHist = (histDraws && histDraws.length > 0) ? histDraws[histDraws.length - 1] : null;
+    const lastDraw = lastHist ? {
+      primary: lastHist.primary,
+      secondary: lastHist.secondary
+    } : null;
+    const result = kind === 'ssq' ? generateSSQ(lastDraw) : generateDLT(lastDraw);
     const summary = getSummary(kind);
     const perBet = result.bets.map(bet => {
       const primary = kind === 'ssq' ? bet.reds : bet.fronts;
@@ -213,6 +222,49 @@ const LINE = 16;              // 单行 16px
 // 区域 y 坐标（计算一次，draw 时按这些值画）
 let layoutY; // 当前累加 y
 
+/**
+ * 取最近一次实际开奖的日期（从历史或网络缓存）
+ * 优先使用 state.latestDraw（联网拉的），fallback 到 state.historySummary
+ */
+function _latestDrawDate() {
+  // v1.2.9 修复：完全只用 state.historySummary（来自本地 history.loadHistory，权威）
+  // state.latestDraw 来自网络，cwl API 被 CDN 缓存可能返回旧数据，**不可信**
+  if (state.historySummary && state.historySummary.latestDate) {
+    return state.historySummary.latestDate;
+  }
+  // 兜底
+  const ld = state.latestDraw && state.latestDraw[state.lottery];
+  if (ld && ld.date) return ld.date;
+  return null;
+}
+
+/**
+ * 取当前期号信息（带 60s 缓存，避免每帧重算）
+ */
+function _getPeriodCached() {
+  const now = Date.now();
+  if (state.currentPeriod && (now - state.periodLastCalc) < 60000) {
+    return state.currentPeriod;
+  }
+  try {
+    state.currentPeriod = getCurrentPeriod(state.lottery);
+    state.periodLastCalc = now;
+  } catch (e) {
+    state.currentPeriod = null;
+  }
+  return state.currentPeriod;
+}
+
+/** 格式化日期：8/2 */
+function _fmtDate(d) {
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+/** 格式化时间：HH:MM */
+function _fmtHM(d) {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 function drawNavBar() {
   // 状态栏区域：顶部 0 ~ SAFE_TOP 用深色背景
   ctx.fillStyle = colorByLottery(state.lottery);
@@ -221,7 +273,7 @@ function drawNavBar() {
   // 不再依赖 safeArea 动态值，使用固定的 SAFE_TOP=60（适配 iPhone 灵动岛 + 状态栏）
   const SAFE_TOP = 60;
   const titleCx = W / 2;
-  text('彩票投注方案生成器', titleCx, SAFE_TOP + 4, { size: 16, weight: 'bold', color: '#fff', align: 'center' });
+  text('发财致富记录器', titleCx, SAFE_TOP + 4, { size: 16, weight: 'bold', color: '#fff', align: 'center' });
   text(state.currentTime, W - PAD - 6, SAFE_TOP + 6, { size: 12, color: 'rgba(255,255,255,0.85)', align: 'right' });
   // 状态条
   ctx.fillStyle = '#f5f5f5';
@@ -240,7 +292,42 @@ function drawTicketCard() {
   ctx.fillStyle = '#fff';
   ctx.fillRect(tx, ty + HEADER_H - 8, tw, 8);
   text(state.lottery === 'ssq' ? '双色球' : '大乐透', tx + 14, ty + 16, { size: 18, weight: 'bold', color: '#fff' });
-  const issueText = state.historySummary.latestIssue ? `第 ${state.historySummary.latestIssue} 期` : '样本';
+  // 票面右上：用「网络 + 本地」里更新那个的 issue/date
+  // v1.4.2: 网络是 2026090 但本地是 2026088 时，标题也要显示 2026090
+  const netDraw = state.latestDraw[state.lottery];
+  const histIssue = state.historySummary && state.historySummary.latestIssue;
+  const histDate = state.historySummary && state.historySummary.latestDate;
+  let latestIssue = histIssue;
+  let latestDate = histDate;
+  if (netDraw && netDraw.issue) {
+    const netNum = parseInt(netDraw.issue, 10);
+    const histNum = histIssue ? parseInt(histIssue, 10) : -1;
+    if (netNum > histNum) {
+      latestIssue = netDraw.issue;
+      latestDate = netDraw.date;
+    }
+  }
+  let issueText;
+  if (latestIssue) {
+    issueText = `第 ${latestIssue} 期`;
+    // 附上开奖日（今日/明日/M/D）
+    if (latestDate) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const ld = new Date(latestDate);
+      ld.setHours(0, 0, 0, 0);
+      const diff = Math.round((ld - today) / 86400000);
+      let suffix;
+      if (diff === 0) suffix = '今日开奖';
+      else if (diff === 1) suffix = '明日开奖';
+      else if (diff === -1) suffix = '昨日开奖';
+      else if (diff > 0) suffix = `${ld.getMonth() + 1}/${ld.getDate()}开奖`;
+      else suffix = `${ld.getMonth() + 1}/${ld.getDate()}已开`;
+      issueText += `（${suffix}）`;
+    }
+  } else {
+    issueText = '样本';
+  }
   text(issueText, tx + tw - 14, ty + 18, { size: 12, color: 'rgba(255,255,255,0.9)', align: 'right' });
 
   // 操作区
@@ -373,64 +460,103 @@ function drawSaveToLibraryButton(x, y, w, h) {
 }
 
 function drawLatestDraw(x, y, w) {
-  // 上期开奖展示条：显示最近一期的开奖号码
-  const draw = state.latestDraw[state.lottery];
+  // v1.4.2 修复：同时考虑 state.latestDraw（网络）和 history（本地）的 issue
+  // 取更新的那个：网络是 2026090 但本地是 2026088 时，用网络
   const h = 60;
   fillRound(x, y, w, h, 8, '#fff8e1');
-  if (state.latestDrawLoading && !draw) {
-    text('⏳  正在拉取最新开奖...', x + w / 2, y + (h - 12) / 2,
-      { size: 11, color: '#ff8a00', align: 'center' });
-    return h;
+  let displayIssue, displayDate, displayPrimary, displaySecondary;
+  let displayIsFromNetwork = false;
+  try {
+    const histDraws = loadHistory(state.lottery);
+    const histLast = (histDraws && histDraws.length > 0) ? histDraws[histDraws.length - 1] : null;
+    const netDraw = state.latestDraw[state.lottery];
+    // 比 issue 哪个更大
+    let bestDraw = null;
+    if (histLast) bestDraw = { source: 'hist', issue: histLast.issue, date: histLast.date, primary: histLast.primary, secondary: histLast.secondary };
+    if (netDraw && netDraw.issue) {
+      const netNum = parseInt(netDraw.issue, 10);
+      const histNum = bestDraw ? parseInt(bestDraw.issue, 10) : -1;
+      if (!bestDraw || netNum > histNum) {
+        bestDraw = { source: 'net', issue: netDraw.issue, date: netDraw.date, primary: netDraw.primary, secondary: netDraw.secondary };
+      }
+    }
+    if (bestDraw) {
+      displayIssue = bestDraw.issue;
+      displayDate = bestDraw.date;
+      displayPrimary = bestDraw.primary || [];
+      displaySecondary = Array.isArray(bestDraw.secondary) ? bestDraw.secondary : [bestDraw.secondary];
+      displayIsFromNetwork = bestDraw.source === 'net';
+    }
+  } catch (e) {
+    displayIssue = '----';
+    displayDate = '';
+    displayPrimary = [];
+    displaySecondary = [];
   }
-  if (!draw) {
-    text('📋  暂无最新开奖（启动时会自动拉取）', x + w / 2, y + (h - 12) / 2,
-      { size: 11, color: '#999', align: 'center' });
-    text('也可在「📚 我的彩票库」里手动刷新', x + w / 2, y + (h - 12) / 2 + 18,
-      { size: 9, color: '#bbb', align: 'center' });
-    return h;
-  }
-  // 标题
-  const lotName = state.lottery === 'ssq' ? '双色球' : '大乐透';
-  text(`📋  上期开奖 ${draw.issue} 期`, x + 8, y + 8,
+  // 标题行
+  text(`📋  上期开奖 ${displayIssue} 期`, x + 8, y + 8,
     { size: 11, weight: 'bold', color: '#666' });
-  text(draw.date || '', x + w - 8, y + 9,
+  // DLT 数据源提示（cwl 没 DLT 接口，自动 fallback 到本地）
+  if (state.lottery === 'dlt') {
+    text('📱 本地', x + w - 55, y + 8, { size: 9, color: '#ff8a00', weight: 'bold' });
+  }
+  text(displayDate || '', x + w - 35, y + 9,
     { size: 9, color: '#999', align: 'right' });
-  // 号码
+  // 右侧 "🔄 刷新" 提示（点击整个上期开奖区域可触发）
+  text('🔄', x + w - 18, y + 8, { size: 12, color: '#ff8a00', align: 'right' });
+  // 号码行：主区 + 分隔 + 次区，整体居中
   const ballY = y + 24;
   const ballSize = 18;
   const ballGap = 4;
-  const primary = draw.primary || [];
+  const primary = displayPrimary;
+  const secondary = displaySecondary;
   const primaryColor = state.lottery === 'ssq' ? '#e60012' : '#ff6f00';
+  const secondaryColor = state.lottery === 'ssq' ? '#1976d2' : '#00acc1';
+  const secondaryLabel = state.lottery === 'ssq' ? '蓝' : '后';
+  // 计算主区宽度
+  const primaryW = primary.length > 0 ? primary.length * ballSize + (primary.length - 1) * ballGap : 0;
+  // 计算次区宽度（标签 + 球组），固定标签宽度确保视觉对齐
+  const secBallsW = secondary.length * ballSize + (secondary.length - 1) * ballGap;
+  const secLabelW = 18;  // "蓝"/"后" 单字宽度 + 间距
+  const secondaryW = secLabelW + secBallsW;
+  // 分隔线宽度
+  const sepW = 10;
+  // 整体内容宽度
+  const totalW = primaryW + sepW + secondaryW;
+  // 起始 x（整体居中，留 4px 边距）
+  let startX = x + (w - totalW) / 2;
+  if (startX < x + 4) startX = x + 4;
+  // 主区
   for (let i = 0; i < primary.length; i++) {
     const n = primary[i];
     ctx.fillStyle = primaryColor;
     ctx.beginPath();
-    ctx.arc(x + 12 + i * (ballSize + ballGap) + ballSize / 2, ballY + ballSize / 2,
+    ctx.arc(startX + i * (ballSize + ballGap) + ballSize / 2, ballY + ballSize / 2,
       ballSize / 2, 0, Math.PI * 2);
     ctx.fill();
-    text(pad(n), x + 12 + i * (ballSize + ballGap) + ballSize / 2,
+    text(pad(n), startX + i * (ballSize + ballGap) + ballSize / 2,
       ballY + ballSize / 2 - 6, { size: 10, weight: 'bold', color: '#fff', align: 'center' });
   }
   // 分隔线
-  const sepX = x + 12 + primary.length * (ballSize + ballGap) + 4;
+  const sepX = startX + primaryW + sepW / 2;
   ctx.strokeStyle = '#ddd';
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(sepX, ballY + 2); ctx.lineTo(sepX, ballY + ballSize - 2); ctx.stroke();
   // 次区
-  const secondary = Array.isArray(draw.secondary) ? draw.secondary : [draw.secondary];
-  const secondaryColor = state.lottery === 'ssq' ? '#1976d2' : '#00acc1';
-  const secondaryLabel = state.lottery === 'ssq' ? '蓝' : '后';
-  text(secondaryLabel, x + sepX + 4, ballY + ballSize / 2 - 6,
+  const secStartX = startX + primaryW + sepW;
+  // 标签（与球垂直居中）
+  text(secondaryLabel, secStartX, ballY + ballSize / 2 - 6,
     { size: 10, color: secondaryColor, weight: 'bold' });
+  // 球
   for (let i = 0; i < secondary.length; i++) {
     const n = secondary[i];
     ctx.fillStyle = secondaryColor;
     ctx.beginPath();
-    ctx.arc(x + sepX + 4 + 14 + i * (ballSize + ballGap) + ballSize / 2,
+    ctx.arc(secStartX + secLabelW + i * (ballSize + ballGap) + ballSize / 2,
       ballY + ballSize / 2, ballSize / 2, 0, Math.PI * 2);
     ctx.fill();
-    text(pad(n), x + sepX + 4 + 14 + i * (ballSize + ballGap) + ballSize / 2,
+    text(pad(n), secStartX + secLabelW + i * (ballSize + ballGap) + ballSize / 2,
       ballY + ballSize / 2 - 6, { size: 10, weight: 'bold', color: '#fff', align: 'center' });
   }
   return h;
@@ -761,7 +887,17 @@ function _buildListText() {
   const lines = [];
   try {
     const lot = state.lottery === 'ssq' ? '双色球' : '大乐透';
-    const issue = state.historySummary.latestIssue ? `第 ${state.historySummary.latestIssue} 期参考` : '方案';
+    const cp4 = _getPeriodCached();
+    let issue;
+    if (cp4) {
+      if (cp4.isNextPeriod) {
+        issue = `下一期 ${cp4.targetPeriod}（${_fmtDate(cp4.targetDate)}开奖 · 截止后）`;
+      } else {
+        issue = `第 ${cp4.targetPeriod} 期（${_fmtDate(cp4.drawDate)}开奖）`;
+      }
+    } else {
+      issue = state.historySummary.latestIssue ? `第 ${state.historySummary.latestIssue} 期参考` : '方案';
+    }
     lines.push(`${lot}  ${issue}`);
     const now = new Date();
     const timeStr = `生成时间：${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
@@ -846,19 +982,25 @@ function saveCurrentToLibrary() {
     return;
   }
   try {
+    const cp3 = _getPeriodCached();
+    const targetIssue = cp3 ? cp3.targetPeriod : (state.historySummary.latestIssue || null);
     const item = library.save({
       lottery: state.lottery,
       bets: state.currentBets,
       totalBets: state.totalBets,
       totalCost: state.totalCost,
-      issue: state.historySummary.latestIssue || null
+      issue: targetIssue
     });
     if (!item) {
       showToast('保存失败');
       return;
     }
     state.libraryCount = library.stats().total;
-    showToast('✓ 已保存到彩票库（共 ' + state.libraryCount + ' 张）', 2200);
+    if (cp3 && cp3.isNextPeriod) {
+      showToast('✓ 已保存到彩票库（下一期 ' + targetIssue + '，截止后）', 2200);
+    } else {
+      showToast('✓ 已保存到彩票库（共 ' + state.libraryCount + ' 张）', 2200);
+    }
     markDirty();
   } catch (e) {
     console.error('[library] save error', e);
@@ -905,8 +1047,9 @@ function refreshFromNetwork() {
     if (totalUpdated > 0) {
       showToast(`✓ 已对照 ${totalUpdated} 张票`, 2000);
     } else {
-      const ssqInfo = ssqDraw ? `SSQ ${ssqDraw.issue}` : 'SSQ -';
-      const dltInfo = dltDraw ? `DLT ${dltDraw.issue}` : 'DLT -';
+      const ssqInfo = ssqDraw ? `SSQ ${ssqDraw.issue}` : 'SSQ ⚠️';
+      // DLT 来源：cwl 没 DLT，永远走本地 fallback
+      const dltInfo = dltDraw ? `DLT ${dltDraw.issue} 📱本地` : 'DLT ⚠️';
       showToast(`当前最新：${ssqInfo} / ${dltInfo}`, 2200);
     }
     markDirty();
@@ -1101,17 +1244,21 @@ function drawLibraryModal() {
     const sumH = 56;
     fillRound(mx + 8, contentY, mw - 16, sumH, 8, '#f5f5f5');
     // 三列：投入 / 中奖 / 净盈亏
+    // 关键：用 colW/2 让每列文字以列中心对齐（不然 align:'center' 会让文字半截溢出 box）
     const colW = (mw - 16) / 3;
+    const colCx0 = mx + 8 + colW * 0.5;  // 列 0 中心
+    const colCx1 = mx + 8 + colW * 1.5;  // 列 1 中心
+    const colCx2 = mx + 8 + colW * 2.5;  // 列 2 中心
     const ty = contentY + 10;
     const cy = contentY + 32;
-    text('累计投入', mx + 8 + colW * 0, ty, { size: 10, color: '#666', align: 'center' });
-    text('累计中奖', mx + 8 + colW * 1, ty, { size: 10, color: '#666', align: 'center' });
-    text('净盈亏',   mx + 8 + colW * 2, ty, { size: 10, color: '#666', align: 'center' });
-    text(st.totalCost + ' 元',  mx + 8 + colW * 0, cy, { size: 14, weight: 'bold', color: '#333', align: 'center' });
-    text(st.totalPrize + ' 元', mx + 8 + colW * 1, cy, { size: 14, weight: 'bold', color: '#4caf50', align: 'center' });
+    text('累计投入', colCx0, ty, { size: 10, color: '#666', align: 'center' });
+    text('累计中奖', colCx1, ty, { size: 10, color: '#666', align: 'center' });
+    text('净盈亏',   colCx2, ty, { size: 10, color: '#666', align: 'center' });
+    text(st.totalCost + ' 元',  colCx0, cy, { size: 14, weight: 'bold', color: '#333', align: 'center' });
+    text(st.totalPrize + ' 元', colCx1, cy, { size: 14, weight: 'bold', color: '#4caf50', align: 'center' });
     const netColor = st.netPnL >= 0 ? '#e60012' : '#1976d2';
     const netText = (st.netPnL >= 0 ? '+' : '') + st.netPnL + ' 元';
-    text(netText, mx + 8 + colW * 2, cy, { size: 14, weight: 'bold', color: netColor, align: 'center' });
+    text(netText, colCx2, cy, { size: 14, weight: 'bold', color: netColor, align: 'center' });
     // 中奖率小字
     if (st.checkedCount > 0) {
       const winRate = (st.wonCount / st.checkedCount * 100).toFixed(0);
@@ -1173,18 +1320,31 @@ function drawLibraryModal() {
     layoutY.libClearW = third;
     layoutY.libClearH = btnH;
   } else {
-    // 返回 + 删除 + 复制
-    const third = (mw - 28 - btnGap * 2) / 3;
+    // 返回 + 联网对照 + 复制 + 删除（4 个按钮）
+    const third = (mw - 28 - btnGap * 3) / 4;
     fillRound(mx + 14, btnY, third, btnH, 8, '#f5f5f5');
     text('← 返回', mx + 14 + third / 2, btnY + (btnH - 14) / 2, { size: 13, color: '#333', align: 'center' });
     layoutY.libBackX = mx + 14;
     layoutY.libBackY = btnY;
     layoutY.libBackW = third;
     layoutY.libBackH = btnH;
+    // 联网对照（关键的"立即刷新"按钮）
+    fillRound(mx + 14 + third + btnGap, btnY, third, btnH, 8, state.refreshing ? '#f5f5f5' : '#fff3e0');
+    ctx.strokeStyle = state.refreshing ? '#bbb' : '#ff8a00';
+    ctx.lineWidth = 1;
+    roundedRectPath(mx + 14 + third + btnGap + 0.5, btnY + 0.5, third - 1, btnH - 1, 7.5);
+    ctx.stroke();
+    text(state.refreshing ? '⏳  拉取中' : '🔄 联网对照',
+      mx + 14 + third + btnGap + third / 2, btnY + (btnH - 14) / 2,
+      { size: 12, weight: 'bold', color: state.refreshing ? '#999' : '#ff8a00', align: 'center' });
+    layoutY.libRefreshX = mx + 14 + third + btnGap;
+    layoutY.libRefreshY = btnY;
+    layoutY.libRefreshW = third;
+    layoutY.libRefreshH = btnH;
     // 复制
-    fillRound(mx + 14 + third + btnGap, btnY, third, btnH, 8, colorByLottery(library.get(state.librarySelectedId)?.lottery || 'ssq'));
-    text('📋  复制', mx + 14 + third + btnGap + third / 2, btnY + (btnH - 14) / 2, { size: 13, weight: 'bold', color: '#fff', align: 'center' });
-    layoutY.libCopyX = mx + 14 + third + btnGap;
+    fillRound(mx + 14 + (third + btnGap) * 2, btnY, third, btnH, 8, colorByLottery(library.get(state.librarySelectedId)?.lottery || 'ssq'));
+    text('📋  复制', mx + 14 + (third + btnGap) * 2 + third / 2, btnY + (btnH - 14) / 2, { size: 13, weight: 'bold', color: '#fff', align: 'center' });
+    layoutY.libCopyX = mx + 14 + (third + btnGap) * 2;
     layoutY.libCopyY = btnY;
     layoutY.libCopyW = third;
     layoutY.libCopyH = btnH;
@@ -1317,9 +1477,13 @@ function drawLibraryDetail(x, y, w, h) {
     resultH = cardH + 8;
     cy += resultH;
   } else {
-    fillRound(x, cy, w, 36, 6, '#fff8e1');
-    text('⏳  还未开奖（启动时会自动联网对照）', x + w / 2, cy + 12, { size: 10, color: '#ff8a00', align: 'center' });
-    resultH = 36 + 8;
+    fillRound(x, cy, w, 60, 6, '#fff8e1');
+    // 显示期号 + 预计开奖时间
+    const issueLabel = item.issue ? `第 ${item.issue} 期` : '本期';
+    text('⏳  还未开奖', x + w / 2, cy + 10, { size: 12, weight: 'bold', color: '#ff8a00', align: 'center' });
+    text(`${issueLabel} — 系统会定期联网对照，结果出来后自动显示`, x + w / 2, cy + 32, { size: 9, color: '#999', align: 'center' });
+    text('（也可点击下方「🔄 联网对照」手动刷新）', x + w / 2, cy + 46, { size: 9, color: '#bbb', align: 'center' });
+    resultH = 60 + 8;
     cy += resultH;
   }
 
@@ -1523,6 +1687,40 @@ function setupTouch() {
         saveCurrentToLibrary();
       } else if (state.pressedBtn.kind === 'library') {
         openLibraryModal();
+      } else if (state.pressedBtn.kind === 'refreshLatestDraw') {
+        // 强制联网刷新（不走缓存）
+        showToast('🔄 联网强制刷新...');
+        network.fetchLatestForce(state.lottery).then(draw => {
+          if (draw && draw._error) {
+            // ★ 显示具体错误原因（域名没加/网络问题/超时）
+            showToast(draw.message || '⚠️ 联网失败', 4000);
+            console.warn('[refreshLatestDraw] error:', draw.reason, draw.errMsg);
+          } else if (draw && draw.issue) {
+            const cur = state.latestDraw[state.lottery];
+            if (!cur || !cur.issue || isNewerIssue(draw.issue, cur.issue)) {
+              state.latestDraw[state.lottery] = draw;
+              state.latestDrawFromCache[state.lottery] = false;
+              markDirty();
+              const r = library.checkAll({ [state.lottery]: draw });
+              if (r.updated > 0) {
+                state.libraryStats = library.stats();
+                state.libraryCount = state.libraryStats.total;
+                state.libraryList = library.list();
+                showToast(`✓ 已更新最新期 ${draw.issue}，对照 ${r.updated} 张票`, 2500);
+              } else {
+                showToast(`✓ 已更新最新期 ${draw.issue}`, 1800);
+              }
+            } else {
+              showToast(`✓ 已是最新 ${draw.issue}`, 1500);
+            }
+          } else {
+            showToast('⚠️ 联网失败，请检查网络或域名配置', 2500);
+          }
+          markDirty();
+        }).catch(err => {
+          console.error('[refreshLatestDraw] error', err);
+          showToast('⚠️ 联网失败', 2000);
+        });
       }
       state.pressedBtn = null;
       state.scrollVelocity = 0;
@@ -1599,35 +1797,135 @@ generate();
 setupTouch();
 loop();
 
+// v1.3.0: 启动时清空 network 缓存（v1.3.0 之前可能被 CDN 缓存污染）
+// 强制下次 fetch 重新走网络
+try {
+  if (typeof wx !== 'undefined' && wx.clearStorageSync) {
+    wx.removeStorageSync('cp_latest_ssq');
+    wx.removeStorageSync('cp_latest_dlt');
+    console.log('[INIT] cleared network cache');
+  }
+} catch (e) {}
+
+// v1.4.1: 定期联网拉最新开奖（每 90 秒一次）
+// 解决：截止后买了下一期的票，下一期开奖后系统自动对照
+setInterval(() => {
+  if (state.refreshing) return;
+  Promise.all([
+    network.fetchLatest('ssq').catch(() => null),
+    network.fetchLatest('dlt').catch(() => null),
+  ]).then(([ssqDraw, dltDraw]) => {
+    let totalUpdated = 0;
+    if (ssqDraw) {
+      const cur = state.latestDraw.ssq;
+      if (!cur || !cur.issue || isNewerIssue(ssqDraw.issue, cur.issue)) {
+        state.latestDraw.ssq = ssqDraw;
+        state.latestDrawFromCache.ssq = false;
+        const r = library.checkAll({ ssq: ssqDraw });
+        totalUpdated += r.updated;
+      }
+    }
+    if (dltDraw && dltDraw.issue) {
+      const cur = state.latestDraw.dlt;
+      if (!cur || !cur.issue || isNewerIssue(dltDraw.issue, cur.issue)) {
+        state.latestDraw.dlt = dltDraw;
+        state.latestDrawFromCache.dlt = false;
+        const r = library.checkAll({ dlt: dltDraw });
+        totalUpdated += r.updated;
+      }
+    }
+    if (totalUpdated > 0) {
+      state.libraryStats = library.stats();
+      state.libraryCount = state.libraryStats.total;
+      state.libraryList = library.list();
+      showToast(`✓ 联网对照，更新 ${totalUpdated} 张票`, 2500);
+      markDirty();
+    }
+  }).catch(() => {});
+}, 90 * 1000);
+
 // 启动后异步拉取最新开奖 + 对照库（不阻塞渲染）
 function _bootstrapFetch() {
   state.latestDrawLoading = true;
-  // 拉 SSQ
-  network.fetchLatest('ssq').then(draw => {
+
+  // 0) 立即从本地数据填充 state.latestDraw —— 不等网络，避免显示旧数据
+  try {
+    const ssqHist = loadHistory('ssq');
+    if (ssqHist && ssqHist.length > 0) {
+      const latest = ssqHist[ssqHist.length - 1];
+      state.latestDraw.ssq = {
+        lottery: 'ssq',
+        issue: latest.issue,
+        date: latest.date,
+        primary: latest.primary,
+        secondary: latest.secondary,
+      };
+      console.log('[BOOT] initial SSQ from local:', latest.issue);
+    }
+    const dltHist = loadHistory('dlt');
+    if (dltHist && dltHist.length > 0) {
+      const latest = dltHist[dltHist.length - 1];
+      state.latestDraw.dlt = {
+        lottery: 'dlt',
+        issue: latest.issue,
+        date: latest.date,
+        primary: latest.primary,
+        secondary: latest.secondary,
+      };
+      console.log('[BOOT] initial DLT from local:', latest.issue);
+    }
+    markDirty();
+  } catch (e) {
+    console.error('[BOOT] initial local fill error', e);
+  }
+
+  // 工具：判断 a 是否比 b 新
+  function isNewerIssue(a, b) {
+    if (!a || !b) return false;
+    const na = parseInt(a, 10);
+    const nb = parseInt(b, 10);
+    return !isNaN(na) && !isNaN(nb) && na > nb;
+  }
+
+  // 拉 SSQ（启动时强制刷新，不走缓存，绕开微信 /CDN 缓存）
+  network.fetchLatestForce('ssq').then(draw => {
     if (draw) {
-      console.log('[BOOT] latest SSQ:', draw.issue);
-      state.latestDraw.ssq = draw;
-      markDirty();
-      const r = library.checkAll({ ssq: draw });
-      if (r.updated > 0) {
-        showToast(`✓ 已对照 ${r.updated} 张票（最新 ${draw.issue}）`, 2000);
-        state.libraryStats = library.stats();
-        state.libraryCount = state.libraryStats.total;
+      // 关键：网络数据必须比当前的更新才覆盖（避免 API 缓存返回旧数据）
+      const cur = state.latestDraw.ssq;
+      if (!cur || !cur.issue || isNewerIssue(draw.issue, cur.issue)) {
+        console.log('[BOOT] latest SSQ:', draw.issue, '(updated)');
+        state.latestDraw.ssq = draw;
+        state.latestDrawFromCache.ssq = false;
         markDirty();
+        const r = library.checkAll({ ssq: draw });
+        if (r.updated > 0) {
+          showToast(`✓ 已对照 ${r.updated} 张票（最新 ${draw.issue}）`, 2000);
+          state.libraryStats = library.stats();
+          state.libraryCount = state.libraryStats.total;
+          markDirty();
+        }
+      } else {
+        console.log('[BOOT] SSQ network older than local:', draw.issue, '<=', cur.issue, '(keep local)');
       }
     }
   }).catch(e => console.error('[BOOT] ssq fetch error', e));
-  // 拉 DLT（cwl 可能返回空，失败也无所谓）
-  network.fetchLatest('dlt').then(draw => {
+  // 拉 DLT（启动时强制刷新）
+  network.fetchLatestForce('dlt').then(draw => {
     if (draw && draw.issue) {
-      console.log('[BOOT] latest DLT:', draw.issue);
-      state.latestDraw.dlt = draw;
-      markDirty();
-      const r = library.checkAll({ dlt: draw });
-      if (r.updated > 0) {
-        state.libraryStats = library.stats();
-        state.libraryCount = state.libraryStats.total;
+      const cur = state.latestDraw.dlt;
+      if (!cur || !cur.issue || isNewerIssue(draw.issue, cur.issue)) {
+        console.log('[BOOT] latest DLT:', draw.issue, '(updated)');
+        state.latestDraw.dlt = draw;
+        state.latestDrawFromCache.dlt = false;
         markDirty();
+        const r = library.checkAll({ dlt: draw });
+        if (r.updated > 0) {
+          state.libraryStats = library.stats();
+          state.libraryCount = state.libraryStats.total;
+          markDirty();
+        }
+      } else {
+        console.log('[BOOT] DLT network older than local:', draw.issue, '<=', cur.issue, '(keep local)');
       }
     }
   }).catch(e => console.error('[BOOT] dlt fetch error', e))

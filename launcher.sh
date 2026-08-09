@@ -61,7 +61,7 @@ LAUNCH_SH="$TMPDIR_LAUNCH/launch.sh"
     printf 'set +e\n'
     printf 'cd %q || { echo "无法进入项目目录：%s"; exit 1; }\n' "$PROJECT_DIR" "$PROJECT_DIR"
     printf 'clear\n'
-    printf 'echo "🎱  彩票投注方案生成器"\n'
+    printf 'echo "💰  发财致富记录器"\n'
     printf 'echo "================================="\n'
     printf 'echo "项目目录：%s"\n' "$PROJECT_DIR"
     printf 'echo "服务地址：http://127.0.0.1:%s"\n' "$PORT"

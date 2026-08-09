@@ -42,6 +42,10 @@ from history import DATA_DIR, Draw, history_file, save_history
 HUAXIA_API = "https://www.xinhua08.com/api/lottery/kj"
 
 # 备用源（体彩/福彩官方域名可能存在反爬）
+
+# 第三个备用源（GitHub 公开数据集，每天自动更新）
+GITHUB_LOTTERY_API = "https://raw.githubusercontent.com/yangxb919/lottery-data/main/data/{name}.json"
+
 BACKUP_APIS = {
     "ssq": [
         # 体彩 / 福彩公开页的 JSON endpoint
@@ -227,14 +231,68 @@ def _parse_cwl_items(items: list, lottery_type: str) -> list:
     return draws
 
 
+
+
+def _fetch_from_github(lottery_type: str, limit: int) -> list:
+    """
+    从 GitHub 公开数据集拉取（yangxb919/lottery-data，每天自动更新）。
+    字段格式：{'issue': str, 'date': str, 'front/red': [str], 'back/blue': [str]}
+    """
+    url = GITHUB_LOTTERY_API.format(name=lottery_type)
+    print(f"  → 尝试 {url}")
+    data = _http_get_json(url)
+    if not data or not isinstance(data, list):
+        return []
+    draws = _parse_github_items(data, lottery_type)
+    return draws[:limit]
+
+
+def _parse_github_items(items: list, lottery_type: str) -> list:
+    """GitHub 数据源专用解析（兼容 DLT 'front/back' 和 SSQ 'red/blue'）。返回 Draw 列表。"""
+    draws = []
+    if lottery_type == "ssq":
+        primary_key, secondary_key = "red", "blue"
+    else:
+        primary_key, secondary_key = "front", "back"
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        issue = str(it.get("issue") or "").strip()
+        date_str = str(it.get("date") or "").strip()
+        primary_raw = it.get(primary_key) or []
+        secondary_raw = it.get(secondary_key) or []
+        try:
+            primary = [int(n) for n in primary_raw if str(n).isdigit()]
+            secondary = [int(n) for n in secondary_raw if str(n).isdigit()]
+        except (ValueError, TypeError):
+            continue
+        if not (issue and date_str and len(primary) >= 5 and len(secondary) >= 1):
+            continue
+        if lottery_type == "ssq":
+            # SSQ 的 issue 在 GitHub 源里可能是 '26' 前缀（错误），跳过避免污染
+            if not issue.startswith("20"):
+                continue
+            draws.append(Draw(issue=issue, date=date_str.split(" ")[0],
+                              reds=primary, blue=int(secondary[0])))
+        else:
+            # DLT 正常 26xxx 前缀
+            if not issue.startswith("26"):
+                continue
+            draws.append(Draw(issue=issue, date=date_str.split(" ")[0],
+                              front=primary, back=secondary))
+    return draws
+
+
 def cmd_fetch(args) -> int:
     """从公开数据源拉取。"""
     print(f"开始拉取 {args.type} 数据（最多 {args.limit} 期）...")
     draws: list = []
-    # 优先级：huaxia → cwl
+    # 优先级：huaxia → cwl → github（兜底）
     draws = _fetch_from_huaxia(args.type, args.limit)
     if not draws:
         draws = _fetch_from_cwl(args.type, args.limit)
+    if not draws:
+        draws = _fetch_from_github(args.type, args.limit)
 
     if not draws:
         print("❌ 所有数据源均未能拉到数据。可改用 'import-json' / 'import-csv' / 'seed' 命令。")

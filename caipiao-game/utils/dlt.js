@@ -44,28 +44,44 @@ const BACK_COMBOS = [
   ["小偶", "大奇"],
 ];
 
-function _genFrontByTemplate(template) {
+function _genFrontByTemplate(template, lastFronts) {
   // 从模板的每个区间各取一个号码
+  // ★v3：尽量排除上期号码（让前区落在 0-1 重合的 84.99% 主流区间）
   const fronts = [];
   for (const zone of template) {
-    fronts.push(secureChoice(ZONES[zone]));
+    let pool = ZONES[zone];
+    if (lastFronts && lastFronts.length > 0) {
+      const filtered = pool.filter(n => !lastFronts.includes(n));
+      if (filtered.length > 0) pool = filtered;
+    }
+    fronts.push(secureChoice(pool));
   }
   return fronts;
 }
 
-function _genBackByCombo(combo) {
-  // 每个类型各取一个号码
-  return combo.map(t => secureChoice(BACK_TYPES[t]));
+function _genBackByCombo(combo, lastBacks) {
+  // ★v3：全排除上期后区（68.6% 完全不同 + 30% 重 1 个，全排除是概率洼地）
+  return combo.map(t => {
+    let pool = BACK_TYPES[t];
+    if (lastBacks && lastBacks.length > 0) {
+      const filtered = pool.filter(n => !lastBacks.includes(n));
+      if (filtered.length > 0) pool = filtered;
+    }
+    return secureChoice(pool);
+  });
 }
 
 /**
  * 生成一期大乐透 4 注
  */
-function generateDLT() {
+function generateDLT(lastDraw) {
+  // lastDraw = { primary: [front1,front2,...], secondary: [back1,back2] }
+  const lastFronts = (lastDraw && lastDraw.primary) || [];
+  const lastBacks = (lastDraw && lastDraw.secondary) || [];
   const bets = [];
   for (let i = 0; i < 4; i++) {
-    const fronts = _genFrontByTemplate(FRONT_TEMPLATES[i]);
-    const backs = _genBackByCombo(BACK_COMBOS[i]);
+    const fronts = _genFrontByTemplate(FRONT_TEMPLATES[i], lastFronts);
+    const backs = _genBackByCombo(BACK_COMBOS[i], lastBacks);
     bets.push({
       index: i + 1,
       fronts: fronts.slice().sort((a, c) => a - c),
