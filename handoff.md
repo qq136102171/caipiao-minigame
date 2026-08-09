@@ -1544,3 +1544,156 @@ IDE 端口: 39144
 > **任何"对照"逻辑都必须按 ticket.issue 精确匹配**。  
 > 不能用网络最新一期去对照所有票（可能跨期出错）。  
 > 同时要**清掉历史错配 result**（防止用户被旧数据误导）。
+
+---
+
+## 26. v1.4.6 本次会话（2026-08-09 续）
+
+### 任务
+
+1. **补齐 DLT 历史数据**（handoff §25 标记的待办项）
+2. **fetch_history.py 加 github 兜底源**
+3. **git commit 之前所有未提交的 v1.4.x 改动**
+
+### 数据来源（关键发现）
+
+handoff §25 提到的"DLT 拉不到（API 全部被拦截）"——通过测试发现：
+
+| 数据源 | 状态 |
+|---|---|
+| `www.cwl.gov.cn/...&name=dlt` | ❌ HTTP 404（cwl 没 DLT 接口） |
+| `webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1` | ❌ 返回 `{"success":false,"errorCode":"E0001"}`（需签名参数） |
+| `www.sporttery.cn` | ❌ HTTP 403（反爬） |
+| `xinhua08.com/api/lottery/kj/dlt` | ❌ SSL EOF 协议错（被 WAF 拦截） |
+| `mxnzp.com/api/lottery/common/history` | ❌ 需付费 app_id |
+| **GitHub: `yangxb919/lottery-data/data/dlt.json`** | ✅ **可用！** 每天自动更新，来源 `500.com` |
+
+GitHub 仓库说明：
+- 仓库: `yangxb919/lottery-data`
+- 描述: "Auto-updated SSQ and DLT lottery draw history JSON data"
+- 频率: 每天自动同步（GitHub Actions）
+- 数据源: `500.com`
+- 字段格式: `{issue, date, front: [str], back: [str], source}`
+- DLT issue 前缀 `26xxx` ✓ 正确
+- ⚠️ **SSQ issue 前缀错误**（用 `26xxx` 而非 `20xxx`），需过滤
+
+### 改动
+
+#### A. DLT 数据补齐（26086-26089）
+
+```python
+missing = [
+    {'issue': '26086', 'date': '2026-08-01', 'front': [10, 11, 18, 22, 35], 'back': [6, 12]},
+    {'issue': '26087', 'date': '2026-08-03', 'front': [5, 10, 16, 24, 27], 'back': [4, 10]},
+    {'issue': '26088', 'date': '2026-08-05', 'front': [3, 9, 11, 24, 27], 'back': [5, 11]},
+    {'issue': '26089', 'date': '2026-08-08', 'front': [3, 7, 12, 14, 26], 'back': [5, 11]},
+]
+```
+
+**核对日期与开奖日**（DLT: 周一/三/六 开奖）：
+
+| 期号 | 日期 | 星期 | 验证 |
+|---|---|---|---|
+| 26086 | 2026-08-01 | 六 | ✓ |
+| 26087 | 2026-08-03 | 一 | ✓ |
+| 26088 | 2026-08-05 | 三 | ✓ |
+| 26089 | 2026-08-08 | 六 | ✓ |
+
+#### B. fetch_history.py 加 github 兜底源
+
+```python
+GITHUB_LOTTERY_API = "https://raw.githubusercontent.com/yangxb919/lottery-data/main/data/{name}.json"
+
+def _fetch_from_github(lottery_type: str, limit: int) -> list:
+    url = GITHUB_LOTTERY_API.format(name=lottery_type)
+    data = _http_get_json(url)
+    return _parse_github_items(data, lottery_type)[:limit]
+
+def _parse_github_items(items: list, lottery_type: str) -> list:
+    # ... 解析 front/red / back/blue ...
+    # ★ 过滤 SSQ 错误前缀（github 源 SSQ 是 26xxx，需跳过）
+    if lottery_type == "ssq" and not issue.startswith("20"):
+        continue
+```
+
+优先级链：`huaxia → cwl → github（兜底）`
+
+#### C. git commit v1.4.x 累积改动
+
+之前 v1.4.0-v1.4.5 的所有改动**都没 commit**。本次提交：
+- 21 files changed, 2441 insertions(+), 143 deletions(-)
+- 包含：.github/workflows/history-update.yml（新增）, scripts/sync_history_to_game.py（新增）, 所有 utils/ 改动, game.js, 数据文件, 文档
+- commit: `aa36656 feat(minigame): v1.4.0-v1.4.5 集成`
+
+### 验证（10 个集成测试）
+
+```
+✓ history loads SSQ
+✓ history loads DLT
+✓ DLT latest is 26089          ← 新增数据生效
+✓ SSQ excludes last blue
+✓ SSQ has ≤1 overlap per group
+✓ DLT excludes last fronts
+✓ Library checkAll works
+✓ Network fetchLatest returns local fallback
+✓ getCurrentPeriod SSQ
+✓ getCurrentPeriod DLT
+
+10/10 passed
+```
+
+### 上传
+
+```
+IDE 端口: 44132
+版本号:   1.4.6
+包大小:   273.4 KB (279,989 字节)
+结果:     ✔ upload
+```
+
+### 关键教训
+
+> **handoff §25 标记的 "DLT 拉不到" 是错误结论** ——
+> 当时的测试只跑了 4 个源（cwl / sporttery / 新华 / mxnzp），没尝试 GitHub 公开数据集。
+> GitHub 上的 `yangxb919/lottery-data` 是个宝藏，每天自动同步，**完全免费 + 公开 + 高频更新**。
+>
+> **今后排查 API 受限的思路**：先查 GitHub 公开数据集，比对多个 source repo。
+> 类似项目：
+> - `qq136102171/caipiao-minigame`（自己）
+> - `yangxb919/lottery-data`（★ DLT + SSQ）
+> - GitHub 搜索: `lottery history json` / `china lottery`
+
+### 当前状态（2026-08-09 Sat 21:xx）
+
+| 彩种 | 最新期 | 日期 | 来源 |
+|---|---|---|---|
+| SSQ | 2026090 | 2026-08-06 (四) | cwl.gov.cn |
+| DLT | 26089 | 2026-08-08 (六) | GitHub yangxb919 |
+
+**今日开奖**：
+- SSQ 2026091 — 周日 21:30（还有 30 分钟）
+- DLT 26090 — 下周一 20:30（明晚）
+
+### 下一步建议
+
+1. **等今晚 21:30 SSQ 2026091 开奖**
+   - 启动 app → 网络拉取 → 票库自动对照
+   - 验证 v1.4.5 的错配修复 + v1.4.6 的 DLT 数据完整性
+
+2. **明晚 20:30 DLT 26090 开奖**
+   - 首次验证 DLT 联网对照（之前 cwl 失败）
+
+3. **GitHub Actions 配置**（仍待办）
+   - 在 repo Settings → Actions → General 开启 "Read and write permissions"
+   - 测试一次手动 workflow run
+   - 预期：每天 22:00 北京时间自动拉取并 commit
+
+4. **提交审核 v1.4.5 + v1.4.6**
+   - 在 mp.weixin.qq.com 后台提交 1.4.6 审核
+   - 主要变化：DLT 数据完整 + DLT 自动联网对照 + 算法调整 + 盈亏记录
+
+### 待清理小项
+
+- � 旧的 `app.miniapp.json.disabled` 文件 — 历史残留，不影响功能
+- ❌ `caipiao-miniprogram.bak/` 备份目录 — 可以删除（不参与编译）
+- ❌ `dist/CaiPiao.app` — 构建产物，下次 `bash build_app.sh` 才会刷新（handoff §11 已说明）
