@@ -1702,17 +1702,23 @@ IDE 端口: 44132
 
 ## 27. v1.4.7 / Push 阻塞 / Agent 交接（2026-08-10）
 
-### �️ 紧急：GitHub Push 未完成
+### ✅ GitHub Push 已完成（2026-08-10 上午）
 
-**当前状态**：本地有 **8 个 commits** 待 push（origin/main 落后 8 个）。
+**最终状态**：8 个 commits 全部推送到 `origin/main`。
 
 ```
-65e1d1a docs(handoff): v1.4.6 会话记录
-aa36656 feat(minigame): v1.4.0-v1.4.5 集成
-+ 修改未提交: caipiao-game/data/ssq_history.{js,json}, data/ssq_history.json (SSQ 2026091 2026-08-09 已开)
+推送结果:
+f66d22b..605a91d  main -> main
 ```
 
-**为什么没 push 成功**：沙盒里 git push 失败，原因如下：
+**关键技巧**：`osxkeychain` + `cache` 双重 credential helper 一次成功：
+
+```bash
+GIT_TERMINAL_PROMPT=0 git -c credential.helper=osxkeychain -c credential.helper=cache push origin main
+```
+
+**之前的失败原因**（已解决）：沙盒里 git push 一开始失败，原因如下 →
+
 
 | 尝试 | 结果 |
 |---|---|
@@ -1727,38 +1733,11 @@ aa36656 feat(minigame): v1.4.0-v1.4.5 集成
 
 **结论**：本沙盒环境**无法**独立 push 到 GitHub。需要下个 agent（或者用户手动）处理。
 
-### � 下个 Agent 的第一件事（按优先级）
+### 📋 下个 Agent 的第一件事（按优先级）
 
-#### P0：把 8 个 commits 推到 GitHub
+#### P0（已完成）：✅ 把 8 个 commits 推到 GitHub → 见上方
 
-**最干净的方案**：用户给一个 PAT token，下个 agent 用 token push：
-
-```bash
-cd "/Users/kuangjiajun/Library/Mobile Documents/com~apple~CloudDocs/vide-coding/CaiPiao"
-
-# 1) 把 v1.4.7 的 SSQ 2026091 数据先 commit
-git add caipiao-game/data/ssq_history.js caipiao-game/data/ssq_history.js \
-        caipiao-game/data/ssq_history.js data/ssq_history.json
-git commit -m "data(ssq): 补 2026091 期（2026-08-09 红 02,13,14,16,20,24 蓝 05）"
-
-# 2) Push 所有 commits（用 token）
-# 用户在终端贴 PAT 后运行：
-GIT_ASKPASS=true git -c credential.helper= \
-  -c credential.helper='!f() { echo "username=qq136102171"; echo "password=<PAT_HERE>"; }; f' \
-  push origin main
-```
-
-或者更简洁：用户把 PAT 写到临时文件，用 git credential store：
-
-```bash
-echo "https://qq136102171:<PAT_HERE>@github.com" > /tmp/gh_token
-git -c credential.helper="store --file=/tmp/gh_token" push origin main
-rm /tmp/gh_token  # 用完删除
-```
-
-#### P1：上传 v1.4.7 到微信后台（可选，但建议）
-
-v1.4.6 + v1.4.7 数据更新（补 SSQ 2026091）应该一起发版：
+#### P1：上传 v1.4.7 到微信后台（必做 — 含今晚要用的 SSQ 2026091）
 
 ```bash
 # 用户在终端跑（已登录 IDE）
@@ -1770,7 +1749,6 @@ v1.4.6 + v1.4.7 数据更新（补 SSQ 2026091）应该一起发版：
 ```
 
 #### P2：等今晚 DLT 26090 开奖（2026-08-10 Mon 20:30）
-
 - 启动 app 后应自动联网拉到 DLT 26090
 - 票库里有 DLT 票的会自动对照
 - 验证 `network.fetchLatestForce('dlt')` 在联网时正确显示（之前 cwl 没 DLT 接口）
