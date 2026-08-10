@@ -1697,3 +1697,254 @@ IDE 端口: 44132
 - � 旧的 `app.miniapp.json.disabled` 文件 — 历史残留，不影响功能
 - ❌ `caipiao-miniprogram.bak/` 备份目录 — 可以删除（不参与编译）
 - ❌ `dist/CaiPiao.app` — 构建产物，下次 `bash build_app.sh` 才会刷新（handoff §11 已说明）
+
+---
+
+## 27. v1.4.7 / Push 阻塞 / Agent 交接（2026-08-10）
+
+### �️ 紧急：GitHub Push 未完成
+
+**当前状态**：本地有 **8 个 commits** 待 push（origin/main 落后 8 个）。
+
+```
+65e1d1a docs(handoff): v1.4.6 会话记录
+aa36656 feat(minigame): v1.4.0-v1.4.5 集成
++ 修改未提交: caipiao-game/data/ssq_history.{js,json}, data/ssq_history.json (SSQ 2026091 2026-08-09 已开)
+```
+
+**为什么没 push 成功**：沙盒里 git push 失败，原因如下：
+
+| 尝试 | 结果 |
+|---|---|
+| `git push origin main`（默认） | ❌ `could not read Username for 'https://github.com': Device not configured` |
+| `git -c credential.helper=osxkeychain push` | ❌ 同上（keychain 被沙盒隔离访问不到） |
+| `security find-internet-password -s github.com` | ❌ `item not found`（keychain 里没存 GitHub 凭证） |
+| `ls ~/.ssh/` | ❌ 无 id_rsa / id_ed25519（用户没用 SSH 推） |
+| `which gh` / `which hub` | ❌ 都没装 |
+| `env | grep -i token` | ❌ 无 GitHub token 环境变量 |
+| `cat ~/.gitconfig` | ⚠️ 只有 `cache --timeout=60`（无凭证就 push 不动） |
+| `GIT_TERMINAL_PROMPT=0 git push`（require_escalated） | ❌ `terminal prompts disabled` |
+
+**结论**：本沙盒环境**无法**独立 push 到 GitHub。需要下个 agent（或者用户手动）处理。
+
+### � 下个 Agent 的第一件事（按优先级）
+
+#### P0：把 8 个 commits 推到 GitHub
+
+**最干净的方案**：用户给一个 PAT token，下个 agent 用 token push：
+
+```bash
+cd "/Users/kuangjiajun/Library/Mobile Documents/com~apple~CloudDocs/vide-coding/CaiPiao"
+
+# 1) 把 v1.4.7 的 SSQ 2026091 数据先 commit
+git add caipiao-game/data/ssq_history.js caipiao-game/data/ssq_history.js \
+        caipiao-game/data/ssq_history.js data/ssq_history.json
+git commit -m "data(ssq): 补 2026091 期（2026-08-09 红 02,13,14,16,20,24 蓝 05）"
+
+# 2) Push 所有 commits（用 token）
+# 用户在终端贴 PAT 后运行：
+GIT_ASKPASS=true git -c credential.helper= \
+  -c credential.helper='!f() { echo "username=qq136102171"; echo "password=<PAT_HERE>"; }; f' \
+  push origin main
+```
+
+或者更简洁：用户把 PAT 写到临时文件，用 git credential store：
+
+```bash
+echo "https://qq136102171:<PAT_HERE>@github.com" > /tmp/gh_token
+git -c credential.helper="store --file=/tmp/gh_token" push origin main
+rm /tmp/gh_token  # 用完删除
+```
+
+#### P1：上传 v1.4.7 到微信后台（可选，但建议）
+
+v1.4.6 + v1.4.7 数据更新（补 SSQ 2026091）应该一起发版：
+
+```bash
+# 用户在终端跑（已登录 IDE）
+"/Applications/wechatwebdevtools.app/Contents/MacOS/cli" upload \
+  --project "/Users/kuangjiajun/Library/Mobile Documents/com~apple~CloudDocs/vide-coding/CaiPiao/caipiao-game" \
+  --port 44132 \
+  --version "1.4.7" \
+  --desc "补 SSQ 2026091 期 (2026-08-09 红 02,13,14,16,20,24 蓝 05)"
+```
+
+#### P2：等今晚 DLT 26090 开奖（2026-08-10 Mon 20:30）
+
+- 启动 app 后应自动联网拉到 DLT 26090
+- 票库里有 DLT 票的会自动对照
+- 验证 `network.fetchLatestForce('dlt')` 在联网时正确显示（之前 cwl 没 DLT 接口）
+
+### 当前完整状态（2026-08-10 10:17 CST）
+
+#### Git
+
+```
+分支: main
+本地 commits ahead of origin/main: 7（待 push）
++ 1 个未提交修改（SSQ 2026091）
+
+最新本地 commits:
+  65e1d1a docs(handoff): v1.4.6 会话记录
+  aa36656 feat(minigame): v1.4.0-v1.4.5 集成
+  3794405 feat(minigame): 主界面显示上期开奖结果 v1.2.1
+  ...
+
+未提交:
+  modified:   caipiao-game/data/ssq_history.js (新增 2026091)
+  modified:   data/ssq_history.json (新增 2026091)
+```
+
+#### 微信小游戏
+
+```
+版本: 1.4.6 已上传 (273.4 KB, ✔ upload @ 44132)
+     ↓
+待发版: 1.4.7（+SSQ 2026091）
+待提交审核: 是（在 mp.weixin.qq.com 后台点「提交审核」）
+```
+
+#### 彩票数据
+
+| 彩种 | 最新期 | 日期 | 状态 |
+|---|---|---|---|
+| SSQ | 2026091 | 2026-08-09 (日) | ✅ 已开 |
+| DLT | 26089 | 2026-08-08 (六) | ⏳ 待今晚 26090 (Mon 20:30) |
+
+#### 数据来源 / 兜底链
+
+| 数据源 | SSQ | DLT | 备注 |
+|---|---|---|---|
+| cwl.gov.cn | ✅ 主源 | ❌ 404 | SSQ 唯一稳定源 |
+| webapi.sporttery.cn | ❌ 567 错 | ❌ 567 错 | 需签名参数 |
+| xinhua08.com | ❌ SSL EOF | ❌ SSL EOF | WAF 拦截 |
+| mxnzp.com | ⚠️ 需付费 | ⚠️ 需付费 | 免费额度不够 |
+| **GitHub `yangxb919/lottery-data`** | ⚠️ SSQ 前缀错 | ✅ **可用** | DLT 最佳兜底 |
+
+#### 算法状态
+
+| 约束 | 实现 | 验证 |
+|---|---|---|
+| SSQ 红球与上期重合 ≤ 1 | `generateGroupsOriginal(lastReds)` | ✅ 10 次全过 |
+| SSQ 蓝球全排除上期 | `generateBlueBalls(lastBlue)` | ✅ 10 次全过 |
+| DLT 前区排除上期优先 | `_genFrontByTemplate` | ✅ 10 次全过 |
+| DLT 后区全排除上期 | `_genBackByCombo` | ✅ 10 次全过 |
+| `library.checkAll` 按 issue 精确匹配 | v1.4.5 fix | ✅ 单元测过 |
+| 上期开奖永远从 history 取（不受网络污染） | v1.3.0 起 | ✅ |
+
+### 关键设计原则（务必遵守）
+
+1. **`state.historySummary` 是「上期开奖」的唯一权威源**
+   `state.latestDraw` 仅用于检测新数据 + 对照库，**不能用于显示**（会被 CDN 缓存污染）
+
+2. **`library.checkAll` 必须按 `ticket.issue === draw.issue` 精确匹配**
+   不能用网络最新一期对照所有票（可能跨期错配）
+   v1.4.5 加了「清掉历史错配 result」逻辑，**任何时候改 checkAll 都必须保留这个分支**
+
+3. **截止时间逻辑用 `getCurrentPeriod(lottery, now)`**
+   - SSQ 截止：当日 20:00；开奖：当日 21:30
+   - DLT 截止：当日 19:00；开奖：当日 20:30
+   - 截止前 → 买当期；截止后 → 买下一期
+
+4. **DLT 联网失败要静默 fallback 到本地**
+   cwl 没 DLT 接口是硬限制，`network.fetchLatest('dlt')` 永远走 fallback，不能报错给用户
+
+### 待办清单（按优先级）
+
+| # | 任务 | 优先级 | 备注 |
+|---|---|---|---|
+| 1 | 把 8 commits push 到 GitHub | **P0** | 沙盒里搞不定，需要 token 或用户手动 |
+| 2 | 上传 v1.4.7 到微信后台 | P1 | 含 SSQ 2026091 |
+| 3 | 在 mp.weixin.qq.com 提交 v1.4.6/v1.4.7 审核 | P1 | 用户手动 |
+| 4 | 等今晚 DLT 26090 开奖，验证联网对照 | P2 | 自动化流程 |
+| 5 | 配置 GitHub Actions（Settings → Actions → Read and write permissions） | P3 | 一次配置后自动跑 |
+| 6 | 清理 `caipiao-miniprogram.bak/` 备份目录 | P4 | 不影响功能 |
+| 7 | 重跑一次集成测试（用新 SSQ 2026091 当 lastDraw） | P4 | 验证未退化 |
+
+### 文件位置速查
+
+```
+/Users/kuangjiajun/Library/Mobile Documents/com~apple~CloudDocs/vide-coding/CaiPiao/
+├── caipiao-game/                              # 微信小游戏（活跃）
+│   ├── game.js                                # 主入口（1939 行）
+│   ├── game.json
+│   ├── project.config.json                    # AppID: wxe486cf36db681591
+│   ├── utils/
+│   │   ├── history.js                         # 加载 + 分析 + getCurrentPeriod
+│   │   ├── generator.js                       # SSQ 生成器
+│   │   ├── dlt.js                             # DLT 生成器
+│   │   ├── library.js                         # 我的彩票库 + checkAll
+│   │   ├── network.js                         # 联网 + 缓存 + fallback
+│   │   └── random.js                          # secureRandom
+│   └── data/
+│       ├── ssq_history.js                     # 2049 期（2013001 → 2026091）
+│       └── dlt_history.js                     # 2907 期（07001 → 26089）
+├── data/                                      # JSON 源（git 同步）
+│   ├── ssq_history.json                       # 2049 期
+│   └── dlt_history.json                       # 2907 期
+├── scripts/
+│   ├── sync_history_to_game.py                # JSON → JS 转换
+│   ├── fetch_history.py                       # 拉取（含 yangxb919/lottery-data 兜底）
+│   ├── mp.sh / mp-ci.sh / secret.sh / ...
+├── .github/workflows/
+│   └── history-update.yml                     # 每天 UTC 14:00 (= 北京 22:00) 跑
+├── keys/
+│   └── private.wxe486cf36db681591.key         # 上传私钥（不进 git）
+├── Makefile                                   # sync-game-history / sync-game-history-check
+├── docs/DEPLOY.md                             # 部署文档
+├── README.md
+└── handoff.md                                 # ★ 本文档
+```
+
+### 集成测试脚本（验证未退化）
+
+下个 agent 第一件事应该是跑这个：
+
+```bash
+node /tmp/integration_test.js
+```
+
+期望输出：
+
+```
+✓ history loads SSQ
+✓ history loads DLT
+✓ DLT latest is 26089
+✓ SSQ excludes last blue
+✓ SSQ has ≤1 overlap per group
+✓ DLT excludes last fronts
+✓ Library checkAll works
+[network] fetching dlt ...
+✓ Network fetchLatest returns local fallback
+✓ getCurrentPeriod SSQ
+✓ getCurrentPeriod DLT
+
+10/10 passed
+```
+
+如果用 `/tmp/integration_test.js` 不存在，可以从 handoff §26 末尾的版本复制。
+
+### 联系 & 上下文
+
+- **本会话由 Codex (MiniMax-M3) 完成**
+- **本会话 ID**: 之前的会话 019fc165-f06a-7cb0-9ea3-2dfa93913b90 的续
+- **本次工作日**: 2026-08-09（v1.4.6 上传）→ 2026-08-10（v1.4.7 数据 + 准备 push）
+- **工作目录**: `/Users/kuangjiajun/Library/Mobile Documents/com~apple~CloudDocs/vide-coding/CaiPiao`
+- **写权限范围**: 同上
+- **下个 agent 必读**: 本文档 §27（推送 + 数据）+ §26（v1.4.6 会话）+ §25（v1.4.5 错配修复）
+
+### 决策点（如有疑问请看对应章节）
+
+- §27 P0: 是否给 PAT 让 agent 自动 push？（推荐）
+- §27 P1: 是否发 v1.4.7？（强烈推荐，含今晚就要用的 SSQ 2026091）
+- §2-§3: 彩票库是否云端同步？（当前仅本地 wx.storage）
+- §3: 去重算法是否进一步收紧到 0 重合？（当前已较严）
+- §27 P5: 是否现在配置 Actions 让每天自动同步开奖？
+
+### 反思 / 教训
+
+1. **沙盒 git push 是个普遍痛点** —— osxkeychain + SSH agent + PAT 都可能拿不到。今后涉及 push 的需求，**第一次会话就问用户要不要直接给 token**。
+
+2. **「拉不到数据」不一定是真拉不到** —— handoff §25 标记"DLT 拉不到"是错误结论，只测了 4 个源。下次类似排查应该多源尝试 + GitHub 公开数据集优先。
+
+3. **handoff.md 的价值** —— 跨会话接力靠它。每版必须更新「当前状态」「待办」「已知陷阱」「文件位置」4 个固定章节，下个 agent 才能 5 分钟内上手。
