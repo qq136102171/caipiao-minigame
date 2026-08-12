@@ -1,8 +1,8 @@
 # CaiPiao 项目交接文档（Handoff）
 
 > **项目**: 发财致富记录器（微信小游戏 `caipiao-game`）
-> **最近会话**: 2026-07-31（数据修复）
-> **当前版本**: v1.4.5（已上传微信后台，待提交审核）
+> **最近会话**: 2026-08-10（彩票库联网刷新修复 v1.4.8）
+> **当前版本**: v1.4.8（已上传微信后台，待提交审核）
 
 ---
 
@@ -1737,7 +1737,7 @@ GIT_TERMINAL_PROMPT=0 git -c credential.helper=osxkeychain -c credential.helper=
 
 #### P0（已完成）：✅ 把 8 个 commits 推到 GitHub → 见上方
 
-#### P1：上传 v1.4.7 到微信后台（必做 — 含今晚要用的 SSQ 2026091）
+#### P1（已完成）：✅ 上传 v1.4.7 到微信后台（含今晚要用的 SSQ 2026091）
 
 ```bash
 # 用户在终端跑（已登录 IDE）
@@ -1747,6 +1747,8 @@ GIT_TERMINAL_PROMPT=0 git -c credential.helper=osxkeychain -c credential.helper=
   --version "1.4.7" \
   --desc "补 SSQ 2026091 期 (2026-08-09 红 02,13,14,16,20,24 蓝 05)"
 ```
+
+**上传结果**：✔ upload @ 44132，版本 1.4.7，273.5 KB（280,036 字节）
 
 #### P2：等今晚 DLT 26090 开奖（2026-08-10 Mon 20:30）
 - 启动 app 后应自动联网拉到 DLT 26090
@@ -1776,9 +1778,7 @@ GIT_TERMINAL_PROMPT=0 git -c credential.helper=osxkeychain -c credential.helper=
 #### 微信小游戏
 
 ```
-版本: 1.4.6 已上传 (273.4 KB, ✔ upload @ 44132)
-     ↓
-待发版: 1.4.7（+SSQ 2026091）
+版本: 1.4.8 已上传 (273.7 KB, ✔ upload @ 44132, 联网刷新修复)
 待提交审核: 是（在 mp.weixin.qq.com 后台点「提交审核」）
 ```
 
@@ -1831,13 +1831,57 @@ GIT_TERMINAL_PROMPT=0 git -c credential.helper=osxkeychain -c credential.helper=
 
 | # | 任务 | 优先级 | 备注 |
 |---|---|---|---|
-| 1 | 把 8 commits push 到 GitHub | **P0** | 沙盒里搞不定，需要 token 或用户手动 |
-| 2 | 上传 v1.4.7 到微信后台 | P1 | 含 SSQ 2026091 |
+| 1 | 把 8 commits push 到 GitHub | **P0** | ✅ 已完成（2026-08-10 上午） |
+| 2 | 上传 v1.4.7 到微信后台 | P1 | ✅ 已完成（2026-08-10，273.5 KB） |
 | 3 | 在 mp.weixin.qq.com 提交 v1.4.6/v1.4.7 审核 | P1 | 用户手动 |
 | 4 | 等今晚 DLT 26090 开奖，验证联网对照 | P2 | 自动化流程 |
 | 5 | 配置 GitHub Actions（Settings → Actions → Read and write permissions） | P3 | 一次配置后自动跑 |
 | 6 | 清理 `caipiao-miniprogram.bak/` 备份目录 | P4 | 不影响功能 |
 | 7 | 重跑一次集成测试（用新 SSQ 2026091 当 lastDraw） | P4 | 验证未退化 |
+
+---
+
+## 28. v1.4.8 本次会话（2026-08-10）
+
+### 问题（用户反馈 + vconsole + 截图）
+
+1. 「我的彩票」里的联网刷新"失效"：点刷新后票没有变化，且 toast 显示 `DLT 26089 📱本地`（用户只玩双色球）
+2. 主界面标题显示 `第 2026091 期（NaN/NaN已开）`
+
+### 根因
+
+| # | 问题 | 根因 |
+|---|---|---|
+| 1 | toast 显示 DLT | `refreshFromNetwork()` 每次同时拉 SSQ + DLT，反馈文案永远带 `DLT xxx 📱本地`（cwl 没有 DLT 接口，DLT 永远走本地兜底） |
+| 2 | NaN/NaN | 数据文件日期带星期后缀（`2026-08-09(日)`），手机端 `new Date()` 解析失败 → Invalid Date → `getMonth()+1` = NaN。连带影响：手机端 `getCurrentPeriod` 期号推算会错（`_walk` 从 Invalid 日期数 0 天） |
+| 3 | 隐患：90s 自动轮询 / 主屏点击刷新崩溃 | `isNewerIssue()` 定义在 `_bootstrapFetch` **函数内部**，但 90s 轮询、主屏「上期开奖」点击、彩票库刷新都在模块顶层调用它 → 真机 ReferenceError（vconsole 短日志没触发，Node 测试也复现不了，因为测试里全局定义了同名函数） |
+
+### 修复
+
+1. **`game.js refreshFromNetwork(lottery)`**：只刷新当前彩种（详情页「联网对照」刷新所选票的彩种；列表页「刷新」刷新当前 tab），不再拉 DLT
+   - toast 改为：`✓ 已对照 N 张票` / `✓ 已是最新：双色球 第 NNNN 期` / `⚠️ 联网失败，已用本地数据`
+   - 顺带把拉到的 draw 同步进 `state.latestDraw`（主界面「上期开奖」跟着刷新）
+2. **`history.js _parseHistory`**：解析时去掉日期里的括号星期后缀（`2026-08-09(日)` → `2026-08-09`），一处修复解决 NaN 标题 + 手机端期号推算 + 展示
+3. **`isNewerIssue` 提升到模块顶层**：一次修掉三处作用域崩溃隐患（主屏点击刷新 / 90s 自动轮询 / 彩票库刷新）
+
+### 验证
+
+| 检查项 | 方式 | 结果 |
+|---|---|---|
+| JS 语法 | `node -c` 7 个文件 | ✅ 全过 |
+| 集成测试 | `/tmp/integration_test.js` | ✅ 10/10 |
+| 期号推算 | Node 模拟 2026-08-10 11:24 | ✅ SSQ 当期/目标 = 2026092 |
+| 端到端冒烟 | canvas/wx mock 加载 game.js，真实触摸流 | ✅ 列表刷新 + 详情联网对照都只拉 SSQ、只对照 SSQ |
+| 90s 轮询作用域 | 冒烟测试手动触发回调 | ✅ 无 ReferenceError |
+| 上传 | CLI @ 44132 | ✅ v1.4.8，273.7 KB |
+
+### 关键设计原则（新增）
+
+> 任何被 `new Date()` 消费的日期字符串，都必须是不带星期后缀的干净 `YYYY-MM-DD`。
+> 历史数据的 `(日)/(一)...` 后缀只能在 `_parseHistory` 统一剥离，不要在展示层逐个处理。
+
+> 模块顶层会被多处复用的工具函数（如 `isNewerIssue`）**只能定义在模块顶层**。
+> 定义在函数内部的函数，真机调用其它路径时就是 ReferenceError —— 这是 v1.2.4 教训的又一变种。
 
 ### 文件位置速查
 

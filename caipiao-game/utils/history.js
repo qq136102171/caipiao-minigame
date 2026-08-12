@@ -48,6 +48,10 @@ function _parseHistory(lines, kind) {
     const parts = line.split("|");
     if (parts.length !== 4) continue;
     const [issue, date, pStr, sStr] = parts;
+    // 数据里日期可能带星期后缀（如 "2026-08-09(日)"），
+    // 手机端 new Date() 解析不了这种字符串（会变 Invalid → NaN），
+    // 统一在这里去掉括号后缀，保证 title / 期号推算 / 开奖对照都拿到干净日期
+    const cleanDate = String(date || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
     const primary = pStr.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
     let secondary;
     if (kind === "ssq") {
@@ -56,7 +60,7 @@ function _parseHistory(lines, kind) {
       secondary = sStr.split(",").map(s => parseInt(s.trim(), 10));
     }
     if (primary.length === 0 || secondary.length === 0) continue;
-    out.push({ issue, date, primary, secondary });
+    out.push({ issue, date: cleanDate, primary, secondary });
   }
   return out;
 }

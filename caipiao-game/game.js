@@ -65,6 +65,15 @@ function levelColor(level) {
   if (level === 'cold') return '#1976d2';
   return '#ff8a00';
 }
+
+// 工具：判断 a 是否比 b 新（SSQ / DLT 期号都是纯数字，直接比大小）
+// 必须在模块顶层定义：主屏点击刷新、90s 自动轮询、彩票库刷新都会用到
+function isNewerIssue(a, b) {
+  if (!a || !b) return false;
+  const na = parseInt(a, 10);
+  const nb = parseInt(b, 10);
+  return !isNaN(na) && !isNaN(nb) && na > nb;
+}
 function formatDist(dist) {
   if (!dist || Object.keys(dist).length === 0) return '—';
   const keys = Object.keys(dist).map(Number).sort((a, b) => a - b);
@@ -1029,28 +1038,37 @@ function closeLibraryModal() {
   markDirty();
 }
 
-function refreshFromNetwork() {
+function refreshFromNetwork(lottery) {
   if (state.refreshing) return;
+  // 只刷新当前彩种（或调用方指定的彩种），不把 DLT 信息带给双色球用户
+  const lot = (lottery === 'ssq' || lottery === 'dlt') ? lottery : state.lottery;
+  const lotName = lot === 'ssq' ? '双色球' : '大乐透';
   state.refreshing = true;
   markDirty();
   showToast('🔄 拉取最新开奖...');
-  Promise.all([
-    network.fetchLatestForce('ssq').catch(() => null),
-    network.fetchLatestForce('dlt').catch(() => null),
-  ]).then(([ssqDraw, dltDraw]) => {
+  network.fetchLatestForce(lot).catch(() => null).then(draw => {
     let totalUpdated = 0;
-    if (ssqDraw) totalUpdated += library.checkAll({ ssq: ssqDraw }).updated;
-    if (dltDraw) totalUpdated += library.checkAll({ dlt: dltDraw }).updated;
+    if (draw && draw.issue) {
+      // 同步主界面「上期开奖」，网络更新才覆盖
+      const cur = state.latestDraw[lot];
+      if (!cur || !cur.issue || isNewerIssue(draw.issue, cur.issue)) {
+        state.latestDraw[lot] = draw;
+        state.latestDrawFromCache[lot] = false;
+      }
+      totalUpdated += library.checkAll({ [lot]: draw }).updated;
+    } else {
+      // 网络失败：本地 history 兜底，照常做一期一期精确对照
+      totalUpdated += library.checkAll({ [lot]: null }).updated;
+    }
     state.libraryList = library.list();
     state.libraryStats = library.stats();
     state.refreshing = false;
     if (totalUpdated > 0) {
       showToast(`✓ 已对照 ${totalUpdated} 张票`, 2000);
+    } else if (draw && draw.issue) {
+      showToast(`✓ 已是最新：${lotName} 第 ${draw.issue} 期`, 2200);
     } else {
-      const ssqInfo = ssqDraw ? `SSQ ${ssqDraw.issue}` : 'SSQ ⚠️';
-      // DLT 来源：cwl 没 DLT，永远走本地 fallback
-      const dltInfo = dltDraw ? `DLT ${dltDraw.issue} 📱本地` : 'DLT ⚠️';
-      showToast(`当前最新：${ssqInfo} / ${dltInfo}`, 2200);
+      showToast('⚠️ 联网失败，已用本地数据', 2200);
     }
     markDirty();
   });
@@ -1113,7 +1131,9 @@ function handleLibraryModalClick(pressedBtn, clientX, clientY) {
   if (k === 'libClose' || k === 'libDismiss') {
     closeLibraryModal();
   } else if (k === 'libRefresh') {
-    refreshFromNetwork();
+    // 详情页的「联网对照」刷新所选票的彩种；列表页的「刷新」刷新当前彩种
+    const sel = state.librarySelectedId ? library.get(state.librarySelectedId) : null;
+    refreshFromNetwork(sel ? sel.lottery : undefined);
   } else if (k === 'libClear') {
     try {
       wx.showModal({
@@ -1877,14 +1897,6 @@ function _bootstrapFetch() {
     markDirty();
   } catch (e) {
     console.error('[BOOT] initial local fill error', e);
-  }
-
-  // 工具：判断 a 是否比 b 新
-  function isNewerIssue(a, b) {
-    if (!a || !b) return false;
-    const na = parseInt(a, 10);
-    const nb = parseInt(b, 10);
-    return !isNaN(na) && !isNaN(nb) && na > nb;
   }
 
   // 拉 SSQ（启动时强制刷新，不走缓存，绕开微信 /CDN 缓存）
