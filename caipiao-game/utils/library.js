@@ -60,12 +60,13 @@ function _hitCount(bet, draw, lottery) {
   const pHit = bp.filter(n => dp.includes(n)).length;
   let sHit = 0;
   if (lottery === 'ssq') {
-    const bs = [bet.secondary].flat();
-    const ds = draw.secondary;
-    sHit = bs.includes(ds) ? 1 : 0;
+    // 兼容两种蓝球格式：历史数据是 [5]，网络数据是 5
+    const bs = [bet.secondary].flat().map(Number);
+    const ds = Array.isArray(draw.secondary) ? draw.secondary[0] : draw.secondary;
+    sHit = bs.includes(Number(ds)) ? 1 : 0;
   } else {
-    const bs = (bet.secondary || []).flat();
-    const ds = draw.secondary || [];
+    const bs = (bet.secondary || []).flat().map(Number);
+    const ds = (Array.isArray(draw.secondary) ? draw.secondary : [draw.secondary]).map(Number);
     sHit = bs.filter(n => ds.includes(n)).length;
   }
   return { pHit, sHit };
@@ -123,7 +124,7 @@ function list() {
 /**
  * 保存当前注
  */
-function save({ lottery, bets, totalBets, totalCost, issue }) {
+function save({ lottery, bets, totalBets, totalCost, issue, multiplier }) {
   if (!bets || bets.length === 0) return null;
   const arr = _read();
   const item = {
@@ -140,6 +141,7 @@ function save({ lottery, bets, totalBets, totalCost, issue }) {
     totalBets: totalBets || bets.length,
     totalCost: totalCost || 0,
     issue: issue || null,
+    multiplier: multiplier || 1,   // 倍投倍率（1=单倍），用于金额与奖金
     result: null,  // 初始未开奖
   };
   arr.push(item);
@@ -153,6 +155,7 @@ function save({ lottery, bets, totalBets, totalCost, issue }) {
  */
 function checkItem(item, draw) {
   if (!item || !draw) return null;
+  const mult = (item.multiplier && item.multiplier > 0) ? item.multiplier : 1;
   const perBet = item.bets.map(bet => {
     const { pHit, sHit } = _hitCount(bet, draw, item.lottery);
     const match = _bestMatch(pHit, sHit, item.lottery);
@@ -164,7 +167,7 @@ function checkItem(item, draw) {
       secondaryHit: sHit,
       hitLevel: match.name,
       hitRank: match.rank,
-      prizeAmount: match.amount,
+      prizeAmount: match.amount * mult,
     };
   });
   // 取所有注中最佳等级

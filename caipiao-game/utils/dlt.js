@@ -97,7 +97,7 @@ function generateDLT(lastDraw) {
     structures: [],
     overlapChecks: [],
     totalBets: 4,
-    totalCost: 12,  // 4 注 × 3 元
+    totalCost: 8,   // 4 注 × 2 元（基础价；3 元是追加价，追加需另计）
     allReds: null,
     blueBalls: null,
   };

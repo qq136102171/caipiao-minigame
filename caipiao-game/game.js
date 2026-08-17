@@ -22,6 +22,8 @@ const state = {
   overlapChecks: [],
   totalBets: 0,
   totalCost: 0,
+  multiplier: 1,     // 倍投倍率（默认单倍）
+  baseCost: 0,       // 单倍基础金额（不含倍率）
   historyAnalysis: { per_bet: [] },
   historySummary: { totalDraws: 0, hasData: false },
   hotcoldRows: [],
@@ -150,7 +152,8 @@ function generate() {
     state.overlapChecks = result.overlapChecks;
     state.blueStats = result.blueStats || null;
     state.totalBets = result.totalBets;
-    state.totalCost = result.totalCost;
+    state.baseCost = result.totalCost;
+    state.totalCost = state.baseCost * state.multiplier;
     state.historyAnalysis = { per_bet: perBet.map(p => p.analysis) };
     state.historySummary = summary;
   } catch (err) {
@@ -380,6 +383,25 @@ function drawTicketCard() {
   layoutY.saveBtnH = 40;
   y += 40 + 10;
 
+  // 倍率（倍投）选择：按实际购买倍率调整投入金额
+  text('倍率', tx + 14, y + 8, { size: 12, color: '#666' });
+  const multValues = [1, 2, 3, 5, 10];
+  const multGap = 6;
+  const multX0 = tx + 14 + 48;
+  const multW = (tw - 28 - 48 - multGap * (multValues.length - 1)) / multValues.length;
+  const multH = 28;
+  layoutY.multRowY = y;
+  for (let i = 0; i < multValues.length; i++) {
+    const mx = multX0 + i * (multW + multGap);
+    const active = state.multiplier === multValues[i];
+    fillRound(mx, y, multW, multH, 6, active ? colorByLottery(state.lottery) : '#f5f5f5');
+    text(`${multValues[i]}倍`, mx + multW / 2, y + (multH - 13) / 2,
+      { size: 12, weight: active ? 'bold' : 'normal', color: active ? '#fff' : '#333', align: 'center' });
+    layoutY['multBtnX' + i] = mx;
+    layoutY['multBtnW' + i] = multW;
+  }
+  y += multH + 10;
+
   // 我的彩票库（独立行，带数字徽标）
   drawLibraryButton(tx + 14, y, tw - 28, 40);
   layoutY.libBtnX = tx + 14;
@@ -413,7 +435,8 @@ function drawTicketCard() {
   ctx.restore();
   y += 10;
   text(`${state.totalBets} 注`, tx + 14, y, { size: 14, weight: 'bold', color: colorByLottery(state.lottery) });
-  text(`${state.totalCost} 元`, tx + 80, y, { size: 14, weight: 'bold', color: colorByLottery(state.lottery) });
+  text(`${state.totalCost} 元` + (state.multiplier > 1 ? ` ×${state.multiplier}` : ''), tx + 80, y,
+    { size: 14, weight: 'bold', color: colorByLottery(state.lottery) });
   // 二维码占位
   const qrSize = 48;
   const qrX = tx + tw - qrSize - 14;
@@ -793,6 +816,7 @@ function computeLayout() {
   if (state.lottery === 'ssq') y += 20;
   y += 40 + 10;      // 生成按钮 + 间距
   y += 40 + 10;      // 导出+保存 行 + 间距
+  y += 28 + 10;      // 倍率行 + 间距
   y += 40 + 14;      // 我的彩票库 + 间距
   y += 20;           // 本期投注
   const betCount = state.currentBets.length || 1;
@@ -883,6 +907,16 @@ function _hitTestButtons(clientX, clientY) {
     const ySv = layoutY.saveBtnY + sy;
     if (inRect(clientX, clientY, layoutY.saveBtnX, ySv, layoutY.saveBtnW, layoutY.saveBtnH)) return { kind: 'save' };
   }
+  if (layoutY.multRowY !== undefined) {
+    const yM = layoutY.multRowY + sy;
+    const multValues = [1, 2, 3, 5, 10];
+    const multH = 28;
+    for (let i = 0; i < multValues.length; i++) {
+      const x = layoutY['multBtnX' + i];
+      const w = layoutY['multBtnW' + i];
+      if (x !== undefined && inRect(clientX, clientY, x, yM, w, multH)) return { kind: 'mult', val: multValues[i] };
+    }
+  }
   if (layoutY.libBtnX !== undefined) {
     const yLb = layoutY.libBtnY + sy;
     if (inRect(clientX, clientY, layoutY.libBtnX, yLb, layoutY.libBtnW, layoutY.libBtnH)) return { kind: 'library' };
@@ -934,6 +968,7 @@ function _buildListText() {
       lines.push(secondaryLabel + '：' + secondaryNums.map(n => pad(Number(n) || 0)).join('  '));
     }
     lines.push('------------------------------');
+    if (state.multiplier > 1) lines.push(`倍率：${state.multiplier} 倍`);
     lines.push(`合计  ${state.totalBets} 注   共 ${state.totalCost} 元`);
     lines.push('彩票仅为娱乐参考，请理性购彩');
   } catch (e) {
@@ -998,23 +1033,35 @@ function saveCurrentToLibrary() {
       bets: state.currentBets,
       totalBets: state.totalBets,
       totalCost: state.totalCost,
-      issue: targetIssue
+      issue: targetIssue,
+      multiplier: state.multiplier
     });
     if (!item) {
       showToast('保存失败');
       return;
     }
     state.libraryCount = library.stats().total;
+    const multTxt = state.multiplier > 1 ? `，${state.multiplier} 倍` : '';
     if (cp3 && cp3.isNextPeriod) {
-      showToast('✓ 已保存到彩票库（下一期 ' + targetIssue + '，截止后）', 2200);
+      showToast('✓ 已保存到彩票库（下一期 ' + targetIssue + '，截止后' + multTxt + '）', 2200);
     } else {
-      showToast('✓ 已保存到彩票库（共 ' + state.libraryCount + ' 张）', 2200);
+      showToast('✓ 已保存到彩票库（共 ' + state.libraryCount + ' 张' + multTxt + '）', 2200);
     }
     markDirty();
   } catch (e) {
     console.error('[library] save error', e);
     showToast('保存失败：' + (e.message || e));
   }
+}
+
+function setMultiplier(n) {
+  state.multiplier = n;
+  // 已生成过号码时，按新倍率重算投入金额（号码不变）
+  if (state.baseCost > 0) {
+    state.totalCost = state.baseCost * n;
+  }
+  showToast(`倍率：${n} 倍`, 1200);
+  markDirty();
 }
 
 function openLibraryModal() {
@@ -1449,7 +1496,7 @@ function drawLibraryList(x, y, w, h) {
       text(`第 1 注 ${primStr}${more}`, x + 90, cy + 32, { size: 11, color: '#333' });
     }
     // 第三行：投入/奖金 + 点击提示
-    let moneyLine = `${item.totalBets} 注  ·  投入 ${item.totalCost} 元`;
+    let moneyLine = `${item.totalBets} 注` + (item.multiplier > 1 ? ` ×${item.multiplier}倍` : '') + `  ·  投入 ${item.totalCost} 元`;
     if (item.result) {
       moneyLine += `  ·  奖金 ${item.result.prizeAmount} 元`;
     }
@@ -1548,7 +1595,7 @@ function drawLibraryDetail(x, y, w, h) {
   }
   // 合计
   cy += 8;
-  let summary = `${item.totalBets} 注  ·  投入 ${item.totalCost} 元`;
+  let summary = `${item.totalBets} 注` + (item.multiplier > 1 ? ` ×${item.multiplier}倍` : '') + `  ·  投入 ${item.totalCost} 元`;
   if (item.result) {
     const net = item.result.prizeAmount - item.totalCost;
     const netTxt = (net >= 0 ? '+' : '') + net;
@@ -1705,6 +1752,8 @@ function setupTouch() {
         copyToClipboard();
       } else if (state.pressedBtn.kind === 'save') {
         saveCurrentToLibrary();
+      } else if (state.pressedBtn.kind === 'mult') {
+        setMultiplier(state.pressedBtn.val);
       } else if (state.pressedBtn.kind === 'library') {
         openLibraryModal();
       } else if (state.pressedBtn.kind === 'refreshLatestDraw') {
